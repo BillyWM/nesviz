@@ -1,0 +1,18 @@
+// Layout override: render inbound label + address list on the same line. 🤖
+
+.nv-inbound {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.nv-inbound-label {
+  margin: 0;
+}
+
+.nv-inbound-addrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

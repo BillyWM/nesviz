@@ -1,0 +1,191 @@
+@use "./variables" as *;
+@use "./mixins" as *;
+
+.nv-artifacts {
+  padding: 10px;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.nv-art-section {
+  background: $panel-bg;
+  border: 1px solid $border;
+  border-radius: $radius-lg;
+  padding: 10px;
+}
+
+.nv-art-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nv-art-header.is-clickable {
+  cursor: pointer;
+  user-select: none;
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+    border-radius: $radius-md;
+  }
+}
+
+.nv-art-header .nv-disclosure {
+  margin-left: auto;
+}
+
+.nv-art-body {
+  margin-top: 8px;
+}
+
+.nv-art-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin: 0;
+}
+
+.nv-art-subtitle {
+  margin-top: 6px;
+  font-weight: 700;
+  font-size: 11px;
+  color: $muted;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.nv-art-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+
+.nv-art-k { color: $muted; }
+.nv-art-v { color: $text-strong; text-align: right; }
+
+.nv-art-muted {
+  color: $muted;
+  font-size: 12px;
+}
+
+.nv-art-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nv-poi-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.nv-poi-addr {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  opacity: 0.95;
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.75;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+.nv-art-item {
+  text-align: left;
+  border: 1px solid $border;
+  background: $panel-bg;
+  border-radius: $radius-md;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.nv-art-item.is-candidate {
+  border-style: dashed;
+}
+
+.nv-art-item.is-resolved {
+  border-color: $good;
+}
+
+.nv-art-item-title {
+  font-weight: 600;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nv-art-badge {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid $border;
+  color: $muted;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.nv-art-badge.is-certain {
+  border-color: $good;
+  color: $good;
+}
+
+.nv-art-badge.is-probable {
+  border-color: $accent;
+  color: $accent;
+}
+
+.nv-art-item-sub {
+  margin-top: 4px;
+  color: $muted;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-art-evidence {
+  @include monospace;
+}
+
+.nv-poi-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.nv-poi-addr {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: $text-strong;
+  opacity: 0.95;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}

@@ -1,0 +1,6 @@
+@use "./variables" as *;
+
+@mixin monospace {
+  font-family: $font-mono;
+  font-variant-numeric: tabular-nums;
+}

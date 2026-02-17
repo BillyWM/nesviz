@@ -1,0 +1,128 @@
+@use "./variables" as *;
+@use "./mixins" as *;
+
+.nv-code-lines {
+  @include monospace;
+
+  // Defensive typography: if some other global stylesheet ends up applying
+  // a `font-size: 0` or odd line-height higher up, force readable code rows. 🤖
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  color: $text !important;
+}
+
+.nv-line {
+  display: grid;
+  // Split the legacy bytes space into bytes + label so the ASM column doesn't shift.
+  grid-template-columns: 78px 70px 120px 50px 1fr;
+  gap: 10px;
+  padding: 4px 12px;
+  border-bottom: 1px solid $muted-bg-2;
+
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  min-height: 22px;
+}
+
+.nv-line > div {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.nv-line:hover {
+  background: $muted-bg;
+}
+
+.nv-line.is-poi-marked {
+  // Soft blue tint for the span of the last-clicked POI.
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.nv-line.is-poi-marked:hover {
+  background: rgba(59, 130, 246, 0.20);
+}
+
+.nv-col-romoff {
+  color: $muted-2 !important;
+}
+
+.nv-col-cpu {
+  color: $muted !important;
+}
+
+.nv-col-bytes {
+  color: #374151 !important;
+}
+
+.nv-col-label {
+  color: $muted !important;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nv-col-asm {
+  color: $text-strong !important;
+}
+
+.nv-inline-label {
+  color: $muted;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+
+.nv-asm-link {
+  font: inherit;
+  color: $accent;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  display: inline;
+}
+
+.nv-asm-link:hover {
+  opacity: 0.85;
+}
+
+.nv-asm-link:active {
+  opacity: 0.75;
+}
+
+.nv-contextmenu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.nv-contextmenu {
+  position: fixed;
+  min-width: 210px;
+  background: #0f0f0f;
+  border: 1px solid #2b2b2b;
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  padding: 6px;
+}
+
+.nv-contextmenu-item {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: #e5e7eb;
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.nv-contextmenu-item:hover {
+  background: #1b1b1b;
+}

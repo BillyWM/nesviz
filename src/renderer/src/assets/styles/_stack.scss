@@ -1,0 +1,51 @@
+@use "./variables" as *;
+
+.nv-stack {
+  padding: 12px;
+  overflow: auto;
+  min-height: 0;
+
+  // Some Electron builds / injected CSS can accidentally zero font-size for
+  // flex containers. Force sane defaults for the PRG view. 🤖
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  color: $text !important;
+}
+
+// TanStack Virtual renders list items in a single absolutely-positioned layer,
+// so spacing must be included in measured row height (padding, not margin). 🤖
+.nv-virt-inner {
+  position: relative;
+  width: 100%;
+}
+
+.nv-virt-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding-bottom: 10px;
+  will-change: transform;
+}
+
+.nv-muted {
+  color: $muted;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.nv-empty {
+  padding: 20px;
+}
+
+.nv-empty-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.nv-empty-sub {
+  margin-top: 4px;
+  color: $muted;
+  font-size: 13px;
+}

@@ -1,0 +1,195 @@
+@use "./variables" as *;
+
+.nv-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 36px 20px;
+  z-index: 50;
+}
+
+.nv-modal {
+  width: min(980px, 96vw);
+  max-height: calc(100vh - 72px);
+  background: $panel-bg;
+  border: 1px solid $border;
+  border-radius: $radius-lg;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+// Dedicated full-window tool panes (Labels, ROM list, Trace Streamer, etc.)
+// These should not look like centered "modal" dialogs, and should not carry the modal shadow
+// that creates the big bottom gradient in standalone tool windows.
+.nv-toolwindow {
+  height: 100%;
+  width: 100%;
+  max-height: none;
+  background: $panel-bg;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.nv-modal.nv-modal-small {
+  width: min(460px, 92vw);
+}
+
+.nv-label-modal-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nv-textinput {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: $radius-md;
+  border: 1px solid $border;
+  background: $panel-bg;
+  color: $text-strong;
+  outline: none;
+}
+
+.nv-textinput:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.6);
+  outline-offset: 2px;
+}
+
+.nv-label-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.nv-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid $border;
+}
+
+.nv-modal-title {
+  font-weight: 700;
+  color: $text-strong;
+}
+
+.nv-modal-subtitle {
+  padding: 0 14px 10px 14px;
+  color: $muted;
+  font-size: 12px;
+  border-bottom: 1px solid $border;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nv-modal-meta {
+  padding: 10px 14px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid $border;
+}
+
+.nv-badge {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: $muted-bg;
+  border: 1px solid $border;
+  color: $text;
+}
+
+.nv-badge-good {
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.nv-badge-bad {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.nv-modal-list {
+  padding: 8px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.nv-modal-list-head {
+  display: grid;
+  grid-template-columns: 1fr 140px 140px 140px;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: $muted;
+  border-bottom: 1px solid $border;
+}
+
+.nv-modal-colhead {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.nv-modal-colhead:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.6);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.nv-modal-row {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  grid-template-columns: 1fr 140px 140px 140px;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: $radius-md;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+}
+
+.nv-modal-row:hover {
+  background: $muted-bg;
+  border-color: $border;
+}
+
+.nv-modal-row:active {
+  background: $muted-bg-2;
+}
+
+.nv-col-name {
+  font-weight: 600;
+  color: $text-strong;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nv-col-meta {
+  color: $text;
+  font-family: $font-mono;
+  font-size: 12px;
+}
+
+.nv-modal-empty {
+  padding: 12px 10px;
+  color: $muted;
+  font-size: 13px;
+}

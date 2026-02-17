@@ -1,0 +1,197 @@
+@use "./variables" as *;
+
+.nv-card {
+  border: 1px solid $border;
+  border-radius: $radius-lg;
+  background: $panel-bg;
+  overflow: hidden;
+}
+
+.nv-card.nv-code {
+  border-left: 4px solid $accent;
+}
+
+.nv-card.nv-code.is-probable {
+  border-left-color: $probable;
+}
+
+.nv-card.is-focused {
+  border-color: $accent;
+  box-shadow: $shadow-focus;
+}
+
+.nv-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid $border;
+  background: $panel-bg;
+}
+
+// BlockCard has a clickable top row (title + disclosure). Keep it looking like a header
+// row but move the separator to the extra header content below.
+.nv-card-header.nv-code-toprow {
+  align-items: center;
+  border-bottom: none;
+  cursor: pointer;
+  user-select: none;
+
+  &:hover {
+    opacity: 0.92;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+}
+
+.nv-code-header-extra {
+  padding: 0 12px 10px;
+  border-bottom: 1px solid $border;
+  background: $panel-bg;
+}
+
+.nv-card-header-left {
+  min-width: 0;
+}
+
+.nv-card-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: $text-strong;
+}
+
+.nv-card-meta {
+  font-size: 12px;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-card-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nv-sub-rom {
+  opacity: 0.75;
+}
+
+.nv-sub-dot {
+  opacity: 0.55;
+}
+
+.nv-inbound {
+  margin-top: 6px;
+  font-size: 12px;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-inbound-label {
+  opacity: 0.9;
+  margin-bottom: 2px;
+}
+
+.nv-inbound-addrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nv-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.nv-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid $border;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 11px;
+  color: $text-strong;
+  user-select: none;
+}
+
+.nv-inbound-addr,
+.nv-inbound-more {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  opacity: 0.95;
+  cursor: pointer;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+}
+
+.nv-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nv-disclosure {
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  margin: 0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: $text-strong;
+  cursor: pointer;
+  user-select: none;
+
+  &:hover {
+    opacity: 0.8;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+.nv-card-body {
+  padding: 8px 0;
+}
+
+.nv-card-footer {
+  padding: 8px 12px 10px;
+  border-top: 1px solid $border;
+  font-size: 12px;
+  color: $muted;
+}
+
+.nv-gap {
+  background: $muted-bg-2;
+  border-style: dashed;
+}
+
+.nv-gap.size-small { min-height: 22px; }
+.nv-gap.size-medium { min-height: 34px; }
+.nv-gap.size-large { min-height: 50px; }
+
+.nv-gap .nv-card-header {
+  border-bottom: none;
+  background: transparent;
+}

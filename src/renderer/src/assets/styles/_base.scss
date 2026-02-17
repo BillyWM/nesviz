@@ -1,0 +1,30 @@
+@use "./variables" as *;
+
+:root {
+  font-family: $font-sans;
+  line-height: 1.4;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: $text;
+  background-color: $bg;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+}
+
+button {
+  font-family: inherit;
+}
