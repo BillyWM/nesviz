@@ -195,3 +195,28 @@
   border-bottom: none;
   background: transparent;
 }
+
+
+.nv-gap-debug {
+  padding: 0 12px 10px;
+  border-top: 1px dashed $border;
+  font-size: 12px;
+  color: $muted;
+  line-height: 1.4;
+}
+
+.nv-gap-bytes-wrap {
+  padding: 0 12px 12px;
+  border-top: 1px dashed $border;
+  background: transparent;
+}
+
+.nv-gap-bytes {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: $font-mono;
+  font-size: 12px;
+  line-height: 1.45;
+  color: $text-strong;
+}

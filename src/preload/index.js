@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('nesviz', {
   openRom: () => ipcRenderer.invoke('nesviz:openRom'),
   openRomPath: (filepath) => ipcRenderer.invoke('nesviz:openRomPath', { filepath }),
+  getStartupRomPath: () => ipcRenderer.invoke('nesviz:getStartupRomPath'),
   selectRomFolder: () => ipcRenderer.invoke('nesviz:selectRomFolder'),
   startRomFolderScan: (folderPath, opts = null) => ipcRenderer.invoke('nesviz:startRomFolderScan', {
     folderPath,
@@ -15,18 +16,39 @@ contextBridge.exposeInMainWorld('nesviz', {
   getBlock: (blockId) => ipcRenderer.invoke('nesviz:getBlock', { blockId }),
   getBlocks: (blockIds) => ipcRenderer.invoke('nesviz:getBlocks', { blockIds }),
   getArtifacts: () => ipcRenderer.invoke('nesviz:getArtifacts'),
+  getPrgBytes: (romStart, romEnd) => ipcRenderer.invoke('nesviz:getPrgBytes', { romStart, romEnd }),
+  getAnalysisLog: () => ipcRenderer.invoke('nesviz:getAnalysisLog'),
+
+  getTuningState: () => ipcRenderer.invoke('nesviz:getTuningState'),
+  setTuningState: (patch) => ipcRenderer.invoke('nesviz:setTuningState', { patch }),
+  resetTuningState: () => ipcRenderer.invoke('nesviz:resetTuningState'),
+
+  onTuningUpdated: (callback) => {
+    const listener = (_evt, payload) => callback(payload);
+    ipcRenderer.on('nesviz:tuningUpdated', listener);
+    return () => ipcRenderer.removeListener('nesviz:tuningUpdated', listener);
+  },
+
+  // Trace Streamer (BwMesen) connection + status
+  traceStreamerGetStatus: () => ipcRenderer.invoke('nesviz:traceStreamer:getStatus'),
+  traceStreamerConnect: () => ipcRenderer.invoke('nesviz:traceStreamer:connect'),
+  traceStreamerDisconnect: () => ipcRenderer.invoke('nesviz:traceStreamer:disconnect'),
+  onTraceStreamerStatus: (callback) => {
+    const listener = (_evt, payload) => callback(payload);
+    ipcRenderer.on('nesviz:traceStreamer:status', listener);
+    return () => ipcRenderer.removeListener('nesviz:traceStreamer:status', listener);
+  },
 
   // Labels window needs to read the current ROM's labels.
   getActiveLabels: () => ipcRenderer.invoke('nesviz:getActiveLabels'),
 
-  setBookmark: (romOff, cpuAddr, set) => ipcRenderer.invoke('nesviz:setBookmark', {
-    romOff,
-    cpuAddr,
+  setBookmark: (site, set) => ipcRenderer.invoke('nesviz:setBookmark', {
+    site,
     set: !!set
   }),
 
-  setLabel: (romOff, label) => ipcRenderer.invoke('nesviz:setLabel', {
-    romOff,
+  setLabel: (site, label) => ipcRenderer.invoke('nesviz:setLabel', {
+    site,
     label
   }),
 
@@ -66,6 +88,18 @@ contextBridge.exposeInMainWorld('nesviz', {
     const listener = () => callback();
     ipcRenderer.on('nesviz:menuShowAbout', listener);
     return () => ipcRenderer.removeListener('nesviz:menuShowAbout', listener);
+  },
+
+  onMenuSetShowDebugInfo: (callback) => {
+    const listener = (_evt, payload) => callback(!!payload?.checked);
+    ipcRenderer.on('nesviz:menuSetShowDebugInfo', listener);
+    return () => ipcRenderer.removeListener('nesviz:menuSetShowDebugInfo', listener);
+  },
+
+  onAnalysisLogUpdated: (callback) => {
+    const listener = (_evt, payload) => callback(payload);
+    ipcRenderer.on('nesviz:analysisLogUpdated', listener);
+    return () => ipcRenderer.removeListener('nesviz:analysisLogUpdated', listener);
   },
 
   // Main process -> main window: navigation requests from the Labels window.

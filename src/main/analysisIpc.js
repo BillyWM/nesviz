@@ -5,9 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { parseInes, readVectorsFromLastPrgBank } from '../shared/rom/ines.js';
+import { parseInes, parseInesHeader, readVectorsFromLastPrgBank } from '../shared/rom/ines.js';
 import { sliceCdlForRom } from '../shared/analyze/cdl/nesCdl.js';
 import { updateRecentRoms } from './menu.js';
+import { appendAnalysisLogLines } from './analysisLogWindow.js';
+import { getTuningState } from './tuningState.js';
 import {
   getBookmarksForRomHash,
   setBookmarkForRomHash,
@@ -15,7 +17,8 @@ import {
   setLabelForRomHash,
   getAddrLabelsForRomHash,
   setAddrLabelForRomHash,
-  recordRecentRomPath
+  recordRecentRomPath,
+  getRecentRomPaths
 } from './userDataStore.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,6 +31,41 @@ let active = null;
 
 // If static analysis is running, this holds the active worker so we can terminate it when switching ROMs.
 let activeWorker = null;
+
+function formatAnalysisLogLines({ filename, mapperKind, analysis }) {
+  const ts = new Date().toLocaleTimeString();
+  const probable = analysis?.probable || {};
+  const stats = analysis?.stats || {};
+  const coverage = typeof stats.coveragePct === 'number' ? `${stats.coveragePct.toFixed(2)}%` : 'n/a';
+  const capHit = probable.globalCapHit ? 'yes' : 'no';
+  const cap = Number.isFinite(probable.maxPromotedChunks) ? probable.maxPromotedChunks : 'n/a';
+  const lines = [
+    `[${ts}] Static analysis complete for ${filename || '(unknown ROM)'} (${mapperKind || 'NROM'}).`,
+    `Blocks: ${stats.blockCount ?? 'n/a'} · Coverage: ${coverage}.`,
+    `Probable chunks: kept ${probable.keptChunkCount ?? 0}, promoted ${probable.promotedChunkCount ?? 0}, seeds ${probable.promotedSeedCount ?? 0}. Global cap hit: ${capHit} (cap ${cap}).`
+  ];
+  if (Number.isFinite(analysis?.debug?.vectorSeedCount)) {
+    lines.push(`Vector/context seed sites: ${analysis.debug.vectorSeedCount}.`);
+  }
+  const regionSummaries = Array.isArray(probable.regionSummaries) ? probable.regionSummaries : [];
+  for (const region of regionSummaries) {
+    const label = Number.isFinite(region.bankIndex)
+      ? `PRG bank ${region.bankIndex}`
+      : `Range ${fmtHexRange(region.rangeStart, region.rangeEnd)}`;
+    const best = Number.isFinite(region.bestScore) ? region.bestScore.toFixed(2) : 'n/a';
+    lines.push(`  ${label} [${fmtHexRange(region.rangeStart, region.rangeEnd)}]: probe starts ${region.probeStartCount ?? 0}, passing ${region.passingCandidateCount ?? 0}, kept ${region.keptCandidateCount ?? 0}, best score ${best}.`);
+  }
+  return lines;
+}
+
+function fmtHexRange(start, end) {
+  return `${fmtHex(start, 6)}-${fmtHex((end | 0) - 1, 6)}`;
+}
+
+function fmtHex(value, width) {
+  const n = Math.max(0, value | 0);
+  return n.toString(16).toUpperCase().padStart(width, '0');
+}
 
 function runStaticNromInWorker(payload, opts = null) {
   const onProgress = typeof opts?.onProgress === 'function' ? opts.onProgress : null;
@@ -153,6 +191,20 @@ async function terminateActiveWorker() {
   }
 }
 
+async function resolveStartupRomPath() {
+  const recent = await getRecentRomPaths();
+  for (const filepath of recent) {
+    if (!filepath || typeof filepath !== 'string') continue;
+    try {
+      await fs.access(filepath);
+      return filepath;
+    } catch {
+      // Ignore stale paths in the recent list.
+    }
+  }
+  return null;
+}
+
 export function registerAnalysisIpc() {
   async function openRomFromPath(filepath) {
     const buf = await fs.readFile(filepath);
@@ -212,49 +264,30 @@ export function registerAnalysisIpc() {
       const buf = Buffer.alloc(16);
       const { bytesRead } = await fh.read(buf, 0, 16, 0);
       if (bytesRead < 16) return null;
-      // iNES magic: 4E 45 53 1A
-      if (buf[0] !== 0x4e || buf[1] !== 0x45 || buf[2] !== 0x53 || buf[3] !== 0x1a) return null;
 
-      const prgUnits = buf[4] | 0;
-      const chrUnits = buf[5] | 0;
-      const flags6 = buf[6] | 0;
-      const flags7 = buf[7] | 0;
-      const mapperNumber = ((flags7 & 0xf0) | (flags6 >> 4)) & 0xff;
+      let header;
+      try {
+        header = parseInesHeader(buf);
+      } catch {
+        return null;
+      }
 
-      const hasTrainer = (flags6 & 0x04) !== 0;
-      const isInes2 = (flags7 & 0x0c) === 0x08;
-
-      const prgBytes = prgUnits * 16384;
-      const chrBytes = chrUnits * 8192;
-
-      const mapperName =
-        mapperNumber === 0 ? 'NROM'
-          : mapperNumber === 1 ? 'MMC1'
-            : (mapperNumber === 3 || mapperNumber === 185) ? 'CNROM'
-            : mapperNumber === 4 ? 'MMC3'
-              : `MAPPER ${mapperNumber}`;
-
-      const isNrom = mapperNumber === 0;
-      const isTargetMapper = mapperNumber === 0 || mapperNumber === 1 || mapperNumber === 3 || mapperNumber === 4 || mapperNumber === 185;
-
+      const isNrom = header.mapperNumber === 0;
       const nromKind = isNrom
-        ? prgBytes === 16384
-          ? 'NROM-128'
-          : prgBytes === 32768
-            ? 'NROM-256'
-            : 'NROM'
+        ? (header.prgSize <= 16384 ? 'NROM-128' : 'NROM-256')
         : null;
 
       return {
-        prgBytes,
-        chrBytes,
-        mapperNumber,
-        mapperName,
-        isTargetMapper,
-        hasTrainer,
-        isInes2,
-        isNrom,
-        nromKind
+        mapperNumber: header.mapperNumber,
+        submapperNumber: header.submapperNumber,
+        mapperName: header.mapperName,
+        prgBytes: header.prgSize,
+        chrBytes: header.chrSize,
+        hasTrainer: header.hasTrainer,
+        isInes2: header.isNes2,
+        isTargetMapper: header.isTargetMapper,
+        nromKind,
+        analysisMapper: header.analysisMapper
       };
     } finally {
       await fh.close();
@@ -284,6 +317,11 @@ export function registerAnalysisIpc() {
     return openRomFromPath(filepath);
   });
 
+  ipcMain.handle('nesviz:getStartupRomPath', async () => {
+    const filepath = await resolveStartupRomPath();
+    return { ok: true, filepath };
+  });
+
   ipcMain.handle('nesviz:getActiveLabels', async () => {
     const s = active;
 
@@ -296,28 +334,23 @@ export function registerAnalysisIpc() {
     return { ok: true, hasRom: true, romHash: s.romHash, labels, addrLabels };
   });
 
-  ipcMain.handle('nesviz:setBookmark', async (_evt, { romOff, cpuAddr, set }) => {
+  ipcMain.handle('nesviz:setBookmark', async (_evt, { site, set }) => {
     const s = active;
     if (!s) return { ok: false, error: 'Load a ROM first.' };
     if (!s.romHash) return { ok: false, error: 'No ROM hash for the active ROM' };
+    if (!site || typeof site !== 'object') return { ok: false, error: 'Invalid site' };
 
-    const r = typeof romOff === 'number' ? romOff : Number(romOff);
-    const c = (typeof cpuAddr === 'number') ? cpuAddr : (cpuAddr != null ? Number(cpuAddr) : null);
-    if (!Number.isFinite(r) || r < 0) return { ok: false, error: 'Invalid romOff' };
-
-    const next = await setBookmarkForRomHash(s.romHash, { romOff: r, cpuAddr: c }, !!set);
+    const next = await setBookmarkForRomHash(s.romHash, site, !!set);
     return { ok: true, bookmarks: next };
   });
 
-  ipcMain.handle('nesviz:setLabel', async (_evt, { romOff, label }) => {
+  ipcMain.handle('nesviz:setLabel', async (_evt, { site, label }) => {
     const s = active;
     if (!s) return { ok: false, error: 'Load a ROM first.' };
     if (!s.romHash) return { ok: false, error: 'No ROM hash for the active ROM' };
+    if (!site || typeof site !== 'object') return { ok: false, error: 'Invalid site' };
 
-    const r = typeof romOff === 'number' ? romOff : Number(romOff);
-    if (!Number.isFinite(r) || r < 0) return { ok: false, error: 'Invalid romOff' };
-
-    const next = await setLabelForRomHash(s.romHash, r, label);
+    const next = await setLabelForRomHash(s.romHash, site, label);
     return { ok: true, labels: next };
   });
 
@@ -440,7 +473,7 @@ export function registerAnalysisIpc() {
                 prgBytes: h.prgBytes,
                 chrBytes: h.chrBytes,
                 mapperNumber: h.mapperNumber,
-                mapperName: h.mapperName,
+                mapperName: h.analysisMapper?.boardName || h.mapperName,
                 nromKind: h.nromKind,
                 hasTrainer: h.hasTrainer,
                 isInes2: h.isInes2
@@ -560,27 +593,25 @@ export function registerAnalysisIpc() {
     const m = s.ines.mapperNumber | 0;
     const prgSize = (s.ines?.prg?.length | 0) || 0;
 
-    // Static analysis currently assumes an NROM-like, fixed CPU->PRG mapping.
-    // Allow MMC1 only for small PRG sizes (<= 32KiB), since those ROMs can run entirely
-    // within a single 32KiB PRG view (i.e., no additional banks to page in).
-    // NOTE: This exception is *only* for MMC1; MMC3 is still unsupported here.
-    const isSupported = m === 0 || m === 3 || m === 185 || (m === 1 && prgSize <= (32 * 1024));
+    const family = s.ines.analysisMapper?.mapperFamily || null;
+    const isSupported = m === 0 || m === 1 || m === 2 || m === 3 || m === 13 || m === 94 || m === 185 || m === 7 || m === 66 || (m === 34 && family === 'BNROM');
     if (!isSupported) {
       return {
         ok: false,
-        error: `Supported for static analysis: mapper 0 (NROM), CNROM (mappers 3 and 185), and MMC1 only when PRG is 32KiB or smaller. ROM is mapper ${m} (PRG ${prgSize} bytes).`
+        error: `Supported for static analysis: mapper 0 (NROM), mapper 1 (MMC1), mapper 2 (UxROM), mapper 94 (UN1ROM), CNROM (mappers 3 and 185), CPROM (13), AxROM (7), BNROM (34 BNROM only), and GxROM (66). ROM is mapper ${m} (PRG ${prgSize} bytes).`
       };
     }
 
-    // Our current mapper model only supports 16KiB or 32KiB PRG under the NROM mapping.
-    if (m === 1 && !(prgSize === (16 * 1024) || prgSize === (32 * 1024))) {
-      return {
-        ok: false,
-        error: `MMC1 static analysis is only supported for 16KiB or 32KiB PRG. ROM is mapper ${m} (PRG ${prgSize} bytes).`
-      };
-    }
 
-    const mapperKind = (m === 3 || m === 185) ? 'CNROM' : 'NROM';
+    let mapperKind = 'NROM';
+    if (m === 3 || m === 185) mapperKind = 'CNROM';
+    else if (m === 13) mapperKind = 'CPROM';
+    else if (m === 2) mapperKind = 'UxROM';
+    else if (m === 94) mapperKind = 'UN1ROM';
+    else if (m === 7) mapperKind = 'AxROM';
+    else if (m === 66) mapperKind = 'GxROM';
+    else if (m === 1) mapperKind = 'MMC1';
+    else if (m === 34 && family === 'BNROM') mapperKind = 'BNROM';
 
     let workerResult;
     try {
@@ -592,9 +623,11 @@ export function registerAnalysisIpc() {
         prgBytes: s.ines.prg,
         vectors: s.vectors,
         mapperKind,
+        mapperMeta: s.ines.analysisMapper || null,
         cdlPrg: s.cdl?.prg || null,
         cdlChr: s.cdl?.chr || null,
-        cdlMeta: s.cdl ? { filename: s.cdl.filename, rawLength: s.cdl.rawLength, warnings: s.cdl.warnings } : null
+        cdlMeta: s.cdl ? { filename: s.cdl.filename, rawLength: s.cdl.rawLength, warnings: s.cdl.warnings } : null,
+        tuningOverrides: { fixedSwitch16k: getTuningState(), mmc1: getTuningState() }
       }, {
         onWorker: (w) => {
           thisWorker = w;
@@ -638,6 +671,14 @@ export function registerAnalysisIpc() {
     // Index blocks for cheap block lookups (getBlock/getBlocks). 🤖
     s.blockById = new Map(analysis.blocks.map((b) => [b.id, b]));
 
+    try {
+      appendAnalysisLogLines(formatAnalysisLogLines({
+        filename: s.filename,
+        mapperKind: analysis?.mapper?.kind || mapperKind,
+        analysis
+      }));
+    } catch {}
+
     return { ok: true, stats: analysis.stats };
   });
 
@@ -666,6 +707,9 @@ export function registerAnalysisIpc() {
       firstAsm: b.lines?.[0]?.asm || '',
       lineCount: b.lines?.length || 0,
       previewLines: (b.lines || []).slice(0, 8).map((ln) => ({
+        siteKey: ln.siteKey || null,
+        ctxKey: ln.ctxKey || null,
+        backing: ln.backing || null,
         romOff: ln.romOff,
         cpuAddr: ln.cpuAddr,
         bytesText: ln.bytesText,
@@ -722,10 +766,12 @@ export function registerAnalysisIpc() {
         // Deduplicate by physical ROM location if available; otherwise fall back to CPU address. 🤖
         const fromRomOff = typeof ln.romOff === 'number' ? ln.romOff : null;
         const fromCpuAddr = typeof ln.cpuAddr === 'number' ? ln.cpuAddr : null;
+        const fromSiteKey = typeof ln.siteKey === 'string' ? ln.siteKey : null;
+        const fromCtxKey = typeof ln.ctxKey === 'string' ? ln.ctxKey : null;
         const toCpuAddr = targetCpu & 0xffff;
-        const key = fromRomOff !== null ? `rom:${fromRomOff}` : `cpu:${fromCpuAddr}`;
+        const key = fromSiteKey || (fromRomOff !== null ? `rom:${fromRomOff}` : `cpu:${fromCpuAddr}`);
         if (!m.has(key)) {
-          m.set(key, { fromRomOff, fromCpuAddr, toCpuAddr });
+          m.set(key, { fromSiteKey, fromCtxKey, fromRomOff, fromCpuAddr, toCpuAddr });
         }
       }
     }
@@ -787,4 +833,40 @@ export function registerAnalysisIpc() {
       rom: { filename: s.filename, mapperNumber: s.ines.mapperNumber, prgSize: s.ines.prg.length }
     };
   });
+
+  ipcMain.handle('nesviz:getPrgBytes', async (_evt, { romStart, romEnd }) => {
+    const s = active;
+    if (!s?.ines?.prg) return { ok: false, error: 'No ROM loaded' };
+    const start = Number(romStart);
+    const endNum = Number(romEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(endNum)) return { ok: false, error: 'Invalid range' };
+    const a = Math.max(0, Math.min(s.ines.prg.length, start | 0));
+    const b = Math.max(a, Math.min(s.ines.prg.length, endNum | 0));
+    return { ok: true, romStart: a, romEnd: b, bytes: Array.from(s.ines.prg.subarray(a, b)) };
+  });
+}
+
+// Expose a minimal view of the currently loaded ROM so other main-process services
+// (e.g. Trace Streamer) can show metadata without inventing a session concept.
+export function getActiveRomSummary() {
+  const s = active;
+  if (!s) return null;
+  const ines = s.ines;
+  return {
+    filepath: s.filepath,
+    filename: s.filename,
+    romHash: s.romHash,
+    ines: ines
+      ? {
+          format: ines.format,
+          mapperNumber: ines.mapperNumber,
+          prgSize: ines.prgSize,
+          chrSize: ines.chrSize,
+          mirroring: ines.mirroring,
+          hasTrainer: !!ines.hasTrainer,
+          hasBattery: !!ines.hasBattery,
+          fourScreen: !!ines.fourScreen
+        }
+      : null
+  };
 }

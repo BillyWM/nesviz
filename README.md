@@ -12,9 +12,9 @@ Currently a work in progress
 
 ## Planned
 
-* A lot more marking
 * All major mappers/boards
 * Dynamic analysis
 	* Talking to the emulator during execution to make discoveries
 * Visual map of memory (RAM and ROM) by usage type
 * Automatic discovery of level-loading routines, etc
+* Connect to an emulator for live analysis (implementation started)

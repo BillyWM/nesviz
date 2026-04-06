@@ -14,7 +14,7 @@ export default function LabelsWindow() {
   const [status, setStatus] = useState('');
   const [hasRom, setHasRom] = useState(false);
   const [romHash, setRomHash] = useState(null);
-  const [labelsByRomOff, setLabelsByRomOff] = useState({});
+  const [labelsBySite, setLabelsBySite] = useState({});
   const [labelsByAddr, setLabelsByAddr] = useState({});
 
   const reload = useCallback(async () => {
@@ -28,7 +28,7 @@ export default function LabelsWindow() {
       const nextHasRom = !!res.hasRom;
       setHasRom(nextHasRom);
       setRomHash(nextHasRom ? (res.romHash || null) : null);
-      setLabelsByRomOff((res.labels && typeof res.labels === 'object') ? res.labels : {});
+      setLabelsBySite((res.labels && typeof res.labels === 'object') ? res.labels : {});
       setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
       setStatus('');
     } catch (e) {
@@ -45,38 +45,50 @@ export default function LabelsWindow() {
     for (const [k, v] of Object.entries(labelsByAddr || {})) {
       const a = Number(k);
       const label = (v ?? '').toString();
-      if (!Number.isFinite(a) || a < 0) continue;
-      if (!label) continue;
+      if (!Number.isFinite(a) || a < 0 || !label) continue;
       out.push({ kind: 'addr', cpuAddr: (a & 0xffff), label });
     }
     out.sort((x, y) => x.cpuAddr - y.cpuAddr);
     return out;
   }, [labelsByAddr]);
 
-  const romItems = useMemo(() => {
+  const siteItems = useMemo(() => {
     const out = [];
-    for (const [k, v] of Object.entries(labelsByRomOff || {})) {
-      const r = Number(k);
-      const label = (v ?? '').toString();
-      if (!Number.isFinite(r) || r < 0) continue;
-      if (!label) continue;
-      out.push({ kind: 'romOff', romOff: (r | 0), label });
+    for (const [siteKey, entry] of Object.entries(labelsBySite || {})) {
+      const label = (entry?.label ?? '').toString();
+      if (!siteKey || !label) continue;
+      const cpuAddr = typeof entry?.cpuAddr === 'number' ? (entry.cpuAddr & 0xffff) : null;
+      const romOff = typeof entry?.romOff === 'number' ? (entry.romOff | 0) : null;
+      const ctxKey = typeof entry?.ctxKey === 'string' && entry.ctxKey ? entry.ctxKey : 'nrom:fixed';
+      out.push({ kind: 'site', siteKey, ctxKey, cpuAddr, romOff, label });
     }
-    out.sort((x, y) => x.romOff - y.romOff);
+    out.sort((a, b) => {
+      const ar = a.romOff ?? Number.MAX_SAFE_INTEGER;
+      const br = b.romOff ?? Number.MAX_SAFE_INTEGER;
+      if (ar !== br) return ar - br;
+      const ac = a.cpuAddr ?? 0;
+      const bc = b.cpuAddr ?? 0;
+      return ac - bc;
+    });
     return out;
-  }, [labelsByRomOff]);
+  }, [labelsBySite]);
 
-  const total = addrItems.length + romItems.length;
+  const total = addrItems.length + siteItems.length;
 
   function navigateTo(it) {
-    if (!it) return;
-    if (!window?.nesviz?.labelsNavigate) return;
+    if (!it || !window?.nesviz?.labelsNavigate) return;
     if (it.kind === 'addr') {
       window.nesviz.labelsNavigate({ kind: 'addr', cpuAddr: it.cpuAddr });
       return;
     }
-    if (it.kind === 'romOff') {
-      window.nesviz.labelsNavigate({ kind: 'romOff', romOff: it.romOff });
+    if (it.kind === 'site') {
+      window.nesviz.labelsNavigate({
+        kind: 'site',
+        siteKey: it.siteKey,
+        ctxKey: it.ctxKey,
+        cpuAddr: it.cpuAddr,
+        romOff: it.romOff
+      });
     }
   }
 
@@ -131,21 +143,23 @@ export default function LabelsWindow() {
               </>
             ) : null}
 
-            {romItems.length ? (
+            {siteItems.length ? (
               <>
                 <div className="nv-modal-list-head" style={{ paddingTop: addrItems.length ? 14 : 6 }}>
-                  <div className="nv-col nv-col-name nv-modal-colhead" style={{ textAlign: 'left' }}>ROM offset labels</div>
+                  <div className="nv-col nv-col-name nv-modal-colhead" style={{ textAlign: 'left' }}>Code site labels</div>
                 </div>
-                {romItems.map((it) => (
+                {siteItems.map((it) => (
                   <button
-                    key={`r:${it.romOff}`}
+                    key={`s:${it.siteKey}`}
                     type="button"
                     className="nv-modal-row"
                     onClick={() => navigateTo(it)}
-                    title={`ROM+0x${fmtHex6(it.romOff)}`}
+                    title={it.romOff != null ? `ROM+0x${fmtHex6(it.romOff)}` : it.siteKey}
                   >
                     <div className="nv-col nv-col-name" style={{ textAlign: 'left' }}>{it.label}</div>
-                    <div className="nv-col nv-col-meta" style={{ textAlign: 'right' }}>0x{fmtHex6(it.romOff)}</div>
+                    <div className="nv-col nv-col-meta" style={{ textAlign: 'right' }}>
+                      {it.cpuAddr != null ? `$${fmtHex4(it.cpuAddr)}` : '—'}{it.romOff != null ? ` · 0x${fmtHex6(it.romOff)}` : ''}
+                    </div>
                   </button>
                 ))}
               </>

@@ -1,24 +1,5 @@
-import { OPCODES } from '../../cpu6502/opcodes.js';
-
-// Decode a straight-line chunk starting at a physical PRG ROM offset. 🤖
-// This is *not* recursive descent; we decode linearly following the fallthrough path until a terminator or error. 🤖
-// The result is used for "probable code" scoring on bytes that weren't reached by conservative CFG discovery. 🤖
-
-const MODE_LEN = {
-  imp: 1,
-  acc: 1,
-  imm: 2,
-  zp: 2,
-  zpX: 2,
-  zpY: 2,
-  abs: 3,
-  absX: 3,
-  absY: 3,
-  ind: 3,
-  indX: 2,
-  indY: 2,
-  rel: 2
-};
+import { disasmOneAtCtx } from '../../cpu6502/disasm.js';
+import { buildRepeatStats } from './semanticRepeats.js';
 
 const BRANCHES = new Set(['BPL', 'BMI', 'BVC', 'BVS', 'BCC', 'BCS', 'BNE', 'BEQ']);
 
@@ -37,93 +18,175 @@ function isTerminator(mnemonic, mode) {
   return false;
 }
 
-// Returns { ok, startOff, endOff, decodedBytes, instructions, boundaries, branchTargets, endsOnCap, endsOnTerminator } 🤖
+
 export function decodeChunkFromRom({ prgBytes, mapper, startOff, maxOffExclusive, maxBytes }) {
   const start = startOff | 0;
   const maxOff = maxOffExclusive | 0;
   const cap = Math.max(1, maxBytes | 0);
-
+  const seedSites = mapper.seedSitesForRomOff ? mapper.seedSitesForRomOff(start) : [];
+  if (!seedSites.length) {
+    return {
+      ok: false,
+      reason: 'no_seed_site',
+      endReason: 'no_seed_site',
+      startOff: start,
+      endOff: start,
+      decodedBytes: 0,
+      instructionCount: 0,
+      instructions: [],
+      boundaries: new Set(),
+      branchTargets: new Set(),
+      endsOnCap: false,
+      endsOnTerminator: false,
+      lastMnemonic: null,
+      lastMode: null,
+      lastFlowType: null
+    };
+  }
+  const seed = seedSites[0];
   const instructions = [];
-  const boundaries = new Set();
+  const boundaries = new Set([start]);
   const branchTargets = new Set();
   let endsOnCap = false;
   let endsOnTerminator = false;
+  let cpu = seed.cpuAddr & 0xffff;
+  let decoded = 0;
+  let endReason = 'range_end';
+  let lastMnemonic = null;
+  let lastMode = null;
+  let lastFlowType = null;
+  const stats = {
+    branchCount: 0,
+    callCount: 0,
+    jumpCount: 0,
+    storeCount: 0,
+    stackCount: 0,
+    bitwiseImmediateCount: 0,
+    maxBitwiseImmediateRun: 0
+  };
+  let currentBitwiseImmediateRun = 0;
 
-  let off = start;
-  boundaries.add(off);
-
-  while (off < maxOff && (off - start) < cap) {
-    const op = prgBytes[off];
-    const entry = OPCODES[op];
-    if (!entry) {
+  while (decoded < cap) {
+    const instr = disasmOneAtCtx(prgBytes, mapper, seed.fetchCtx, cpu);
+    if (!instr.ok || instr.backing?.kind !== 'exact') {
+      endReason = instr?.flow?.type === 'unmapped' ? 'unmapped' : 'decode_fail';
       return {
         ok: false,
-        reason: 'illegal',
+        reason: instr?.flow?.type || 'decode_fail',
+        endReason,
         startOff: start,
-        endOff: off,
-        decodedBytes: off - start,
+        endOff: start + decoded,
+        decodedBytes: decoded,
+        instructionCount: instructions.length,
         instructions,
         boundaries,
         branchTargets,
         endsOnCap,
-        endsOnTerminator
+        endsOnTerminator,
+        fetchCtx: seed.fetchCtx,
+        cpuStart: seed.cpuAddr & 0xffff,
+        lastMnemonic,
+        lastMode,
+        lastFlowType,
+        repeatStats: buildRepeatStats(instructions)
       };
     }
-
-    const len = MODE_LEN[entry.mode] ?? 1;
-    if (off + len > maxOff) {
-      // Would read beyond the scan range; stop cleanly (not an illegal opcode, just out-of-range). 🤖
+    const off = instr.backing.romOff | 0;
+    if (off < start || off + instr.len > maxOff) {
+      endReason = 'range_end';
       break;
     }
 
-    const bytes = Array.from(prgBytes.subarray(off, off + len));
-
     let branchTargetOff = null;
-    if (BRANCHES.has(entry.mnemonic) && entry.mode === 'rel') {
-      // Relative branches are position-relative; for NROM, CPU-relative offsets correspond to ROM-relative offsets too. 🤖
-      branchTargetOff = off + 2 + s8(bytes[1]);
-      branchTargets.add(branchTargetOff);
+    let branchTargetCpu = null;
+    if (BRANCHES.has(instr.mnemonic) && instr.mode === 'rel' && Array.isArray(instr.bytes) && instr.bytes.length > 1) {
+      branchTargetCpu = (cpu + 2 + s8(instr.bytes[1])) & 0xffff;
+      const targetFetch = mapper.resolveCodeFetch ? mapper.resolveCodeFetch(seed.fetchCtx, branchTargetCpu) : null;
+      if (targetFetch?.backing?.kind === 'exact') {
+        branchTargetOff = targetFetch.backing.romOff | 0;
+        branchTargets.add(branchTargetOff);
+      }
     }
 
     let absTargetCpu = null;
-    if ((entry.mnemonic === 'JSR' && entry.mode === 'abs') || (entry.mnemonic === 'JMP' && entry.mode === 'abs')) {
-      absTargetCpu = u16le(bytes, 1);
+    if ((instr.mnemonic === 'JSR' && instr.mode === 'abs') || (instr.mnemonic === 'JMP' && instr.mode === 'abs')) {
+      absTargetCpu = u16le(instr.bytes, 1);
     }
 
-    const ins = {
+    if (BRANCHES.has(instr.mnemonic)) stats.branchCount++;
+    if (instr.mnemonic === 'JSR') stats.callCount++;
+    if (instr.mnemonic === 'JMP') stats.jumpCount++;
+    if (instr.mnemonic === 'STA' || instr.mnemonic === 'STX' || instr.mnemonic === 'STY') stats.storeCount++;
+    if (
+      instr.mnemonic === 'PHA' || instr.mnemonic === 'PHP' || instr.mnemonic === 'PLA' || instr.mnemonic === 'PLP' ||
+      instr.mnemonic === 'TSX' || instr.mnemonic === 'TXS'
+    ) {
+      stats.stackCount++;
+    }
+    const isBitwiseImmediate = instr.mode === 'imm' && (instr.mnemonic === 'EOR' || instr.mnemonic === 'ORA' || instr.mnemonic === 'AND');
+    if (isBitwiseImmediate) {
+      stats.bitwiseImmediateCount++;
+      currentBitwiseImmediateRun++;
+      if (currentBitwiseImmediateRun > stats.maxBitwiseImmediateRun) stats.maxBitwiseImmediateRun = currentBitwiseImmediateRun;
+    } else {
+      currentBitwiseImmediateRun = 0;
+    }
+
+    const bytesKey = Array.isArray(instr.bytes) ? instr.bytes.map((b) => b.toString(16).padStart(2, '0')).join(' ') : '';
+
+    instructions.push({
       off,
-      op,
-      mnemonic: entry.mnemonic,
-      mode: entry.mode,
-      len,
+      cpuAddr: cpu,
+      op: instr.op,
+      mnemonic: instr.mnemonic,
+      mode: instr.mode,
+      len: instr.len,
+      bytes: Array.isArray(instr.bytes) ? instr.bytes.slice() : [],
+      bytesKey,
       branchTargetOff,
+      branchTargetCpu,
       absTargetCpu
-    };
-    instructions.push(ins);
+    });
 
-    const nextOff = off + len;
-    if (nextOff < maxOff) boundaries.add(nextOff);
+    lastMnemonic = instr.mnemonic;
+    lastMode = instr.mode;
+    lastFlowType = instr.flow?.type || null;
 
-    off = nextOff;
+    decoded += instr.len;
+    boundaries.add(off + instr.len);
+    cpu = (cpu + instr.len) & 0xffff;
 
-    if (isTerminator(entry.mnemonic, entry.mode)) {
+    if (isTerminator(instr.mnemonic, instr.mode)) {
       endsOnTerminator = true;
+      endReason = 'terminator';
       break;
     }
   }
 
-  if ((off - start) >= cap) endsOnCap = true;
-
+  if (decoded >= cap) {
+    endsOnCap = true;
+    endReason = 'cap';
+  }
   return {
     ok: instructions.length > 0,
     reason: 'ok',
+    endReason,
     startOff: start,
-    endOff: off,
-    decodedBytes: off - start,
+    endOff: start + decoded,
+    decodedBytes: decoded,
+    instructionCount: instructions.length,
     instructions,
     boundaries,
     branchTargets,
     endsOnCap,
-    endsOnTerminator
+    endsOnTerminator,
+    terminatorMnemonic: instructions.length ? instructions[instructions.length - 1].mnemonic : null,
+    stats,
+    fetchCtx: seed.fetchCtx,
+    cpuStart: seed.cpuAddr & 0xffff,
+    lastMnemonic,
+    lastMode,
+    lastFlowType,
+    repeatStats: buildRepeatStats(instructions)
   };
 }

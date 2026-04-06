@@ -19,7 +19,7 @@ function blockedSummary(blockedBy) {
   return blockedBy.slice(0, 2).join(', ');
 }
 
-export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, pointsOfInterest, bookmarks, labelsByRomOff, onNavigateToBlock, onNavigateToRomOff, onContextMenuBookmark }) {
+export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, pointsOfInterest, bookmarks, labelsBySite, onNavigateToBlock, onNavigateToSite, onContextMenuBookmark }) {
   const [openByKey, setOpenByKey] = useState(() => ({
     rom: true,
     poi: true,
@@ -104,7 +104,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
         isOpen={!!openByKey.bookmarks}
         onToggle={() => toggle('bookmarks')}
         bookmarks={bookmarks}
-        onNavigateToRomOff={onNavigateToRomOff}
+        onNavigateToSite={onNavigateToSite}
         onContextMenuBookmark={onContextMenuBookmark}
       />
 
@@ -289,11 +289,18 @@ function groupPois(pointsOfInterest) {
   return keys.map((k) => ({ kind: k, items: byKind.get(k) }));
 }
 
-function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToRomOff, onContextMenuBookmark }) {
+function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToSite, onContextMenuBookmark }) {
   const sorted = (bookmarks || [])
-    .filter((b) => b && typeof b.romOff === 'number')
+    .filter((b) => b && typeof b.siteKey === 'string')
     .slice()
-    .sort((a, b) => (a.romOff - b.romOff));
+    .sort((a, b) => {
+      const ar = typeof a.romOff === 'number' ? a.romOff : Number.MAX_SAFE_INTEGER;
+      const br = typeof b.romOff === 'number' ? b.romOff : Number.MAX_SAFE_INTEGER;
+      if (ar !== br) return ar - br;
+      const ac = typeof a.cpuAddr === 'number' ? a.cpuAddr : 0;
+      const bc = typeof b.cpuAddr === 'number' ? b.cpuAddr : 0;
+      return ac - bc;
+    });
 
   return (
     <div className="nv-art-section">
@@ -334,9 +341,9 @@ function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToRomOff, onC
               {sorted.map((b) => {
                 return (
                   <button
-                    key={b.romOff}
+                    key={b.siteKey}
                     className="nv-art-item"
-                    onClick={() => onNavigateToRomOff?.(b.romOff)}
+                    onClick={() => onNavigateToSite?.(b)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       e.stopPropagation();

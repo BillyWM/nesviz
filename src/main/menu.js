@@ -3,9 +3,12 @@ import path from 'node:path';
 import { showRomListWindow } from './romListWindow.js';
 import { showLabelsWindow } from './labelsWindow.js';
 import { showTraceStreamerWindow } from './traceStreamerWindow.js';
+import { showAnalysisLogWindow } from './analysisLogWindow.js';
+import { showTuningWindow } from './tuningWindow.js';
 
 let currentWin = null;
 let currentRecentRoms = [];
+let currentShowDebugInfo = false;
 
 function buildTemplate({ win, recentRoms }) {
   const devUrl = process.env.VITE_DEV_SERVER_URL || process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL || process.env.ELECTRON_RENDERER_URL;
@@ -84,38 +87,50 @@ function buildTemplate({ win, recentRoms }) {
         }
       ]
     },
+  ];
+
+  const debugSubmenu = [
     {
-      role: 'help',
-      submenu: [
-        {
-          label: 'About NesViz',
-          click: () => {
-            // Keep it simple for now; macOS uses the standard app menu About item.
-            if (!win || win.isDestroyed()) return;
-            win.webContents.send('nesviz:menuShowAbout');
-          }
-        }
-      ]
+      label: 'Show debug info',
+      type: 'checkbox',
+      checked: !!currentShowDebugInfo,
+      click: (menuItem) => {
+        currentShowDebugInfo = !!menuItem?.checked;
+        if (!win || win.isDestroyed()) return;
+        win.webContents.send('nesviz:menuSetShowDebugInfo', { checked: currentShowDebugInfo });
+      }
+    },
+    {
+      label: 'Analysis log',
+      click: () => {
+        showAnalysisLogWindow();
+      }
+    },
+    {
+      label: 'Tuning',
+      click: () => {
+        showTuningWindow();
+      }
     }
   ];
 
-  // Dev-only Debug menu (shown only when running via the dev server URL).
   if (isDev) {
-    template.push({
-      label: 'Debug',
-      submenu: [
-        {
-          label: 'Open DevTools',
-          accelerator: 'CommandOrControl+Shift+I',
-          click: () => {
-            if (!win || win.isDestroyed()) return;
-            // Keep devtools in a separate window so it doesn't steal layout space.
-            win.webContents.openDevTools({ mode: 'detach' });
-          }
-        }
-      ]
+    debugSubmenu.push({ type: 'separator' });
+    debugSubmenu.push({
+      label: 'Open DevTools',
+      accelerator: 'CommandOrControl+Shift+I',
+      click: () => {
+        if (!win || win.isDestroyed()) return;
+        // Keep devtools in a separate window so it doesn't steal layout space.
+        win.webContents.openDevTools({ mode: 'detach' });
+      }
     });
   }
+
+  template.push({
+    label: 'Debug',
+    submenu: debugSubmenu
+  });
 
   // On macOS, add the application menu to match platform conventions.
   if (process.platform === 'darwin') {

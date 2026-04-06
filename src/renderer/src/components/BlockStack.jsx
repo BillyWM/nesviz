@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { BlockCard } from './BlockCard.jsx';
-import { hex6 } from '../util/hex.js';
+import { hex4, hex6 } from '../util/hex.js';
 import { GapCard } from './GapCard.jsx';
 
 export function BlockStack({
@@ -14,11 +14,17 @@ export function BlockStack({
   onNavigateToCpuAddr,
   canNavigateCpuAddr,
   resolveBlockIdForCpuAddr,
-  labelsByRomOff,
+  labelsBySite,
   labelsByAddr,
   onHoverLine,
   onContextMenuLine,
   onContextMenuBlock,
+  onContextMenuGap,
+  shownGapBytesByKey,
+  gapBytesByKey,
+  gapBytesLoadingByKey,
+  analysisDebug,
+  showDebugInfo = false,
   apiRef
 }) {
   const [expandedById, setExpandedById] = useState({});
@@ -32,6 +38,139 @@ export function BlockStack({
   const codeItems = useMemo(() => timeline.filter((t) => t.type === 'code'), [timeline]);
   const hasAny = timeline && timeline.length > 0;
   const hasCode = codeItems.length > 0;
+
+
+  function parseBytesLen(bytesText) {
+    if (typeof bytesText !== 'string') return 0;
+    return bytesText.trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  function findPrevCodeItem(index) {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const it = timeline[i];
+      if (it?.type === 'code') return it;
+    }
+    return null;
+  }
+
+  function mapDecodeFailureReason(reason) {
+    if (reason === 'cdl_data') return 'start site is marked data-only by CDL';
+    if (reason === 'unmapped' || reason === 'non_exact_backing') return 'start site did not have exact fetch backing';
+    if (reason === 'illegal') return 'start site decode failed immediately';
+    if (reason) return `attempted start failed (${reason})`;
+    return 'attempted start failed';
+  }
+
+  function leaderReasonPriority(reason) {
+    switch (reason?.kind) {
+      case 'branch_target': return 0;
+      case 'jump_target': return 1;
+      case 'call_target': return 2;
+      case 'mapper_split': return 3;
+      case 'seed_entry': return 4;
+      case 'probable_seed': return 5;
+      case 'fallthrough_seed': return 6;
+      default: return 99;
+    }
+  }
+
+  function formatLeaderReason(reason, nextCpu) {
+    if (!reason || typeof reason !== 'object') return null;
+    const src = typeof reason.fromPc === 'number' ? `$${hex4(reason.fromPc)}` : 'an unknown site';
+    const dst = `$${hex4(typeof reason.targetPc === 'number' ? reason.targetPc : nextCpu)}`;
+    const mnemonic = typeof reason.mnemonic === 'string' && reason.mnemonic ? reason.mnemonic : 'flow';
+    switch (reason.kind) {
+      case 'branch_target':
+        return `Marked hard because ${mnemonic} at ${src} targets ${dst}.`;
+      case 'jump_target':
+        return `Marked hard because ${mnemonic} at ${src} jumps to ${dst}.`;
+      case 'call_target':
+        return `Marked hard because ${mnemonic} at ${src} calls ${dst}.`;
+      case 'mapper_split':
+        return `Marked hard because a mapper-write split after ${mnemonic} at ${src} starts a new block at ${dst}.`;
+      case 'seed_entry':
+        return `Marked hard because ${dst} was seeded as an entry/start site.`;
+      case 'probable_seed':
+        return `Marked hard because ${dst} was promoted as a probable start site.`;
+      case 'fallthrough_seed':
+        return `Marked hard because control flow from ${src} explicitly scheduled fallthrough to ${dst}.`;
+      default:
+        return null;
+    }
+  }
+
+  function synthesizeGapDebugReason(item, index) {
+    if (!showDebugInfo) return [];
+    const debug = analysisDebug || null;
+    const prevItem = findPrevCodeItem(index);
+    if (!prevItem) return ['No preceding decoded block to infer a likely start site.'];
+    const prevFull = blockCache[prevItem.blockId] || null;
+    const prevIndex = blocksById.get(prevItem.blockId) || null;
+    const prevLines = Array.isArray(prevFull?.lines) ? prevFull.lines : [];
+    const lastLine = prevLines.length ? prevLines[prevLines.length - 1] : null;
+    if (!lastLine) return ['Preceding block is not fully loaded yet.'];
+
+    const lastCpu = typeof lastLine.cpuAddr === 'number' ? (lastLine.cpuAddr & 0xffff) : null;
+    const lastLen = parseBytesLen(lastLine.bytesText);
+    const lastCtxKey = (typeof lastLine.ctxKey === 'string' && lastLine.ctxKey)
+      ? lastLine.ctxKey
+      : ((prevIndex?.instances?.[0]?.ctxId) || prevIndex?.ctxKey || 'nrom:fixed');
+    if (lastCpu == null || !(lastLen > 0)) return ['Could not infer the next CPU site after the preceding block.'];
+
+    const nextCpu = (lastCpu + lastLen) & 0xffff;
+    const nextSiteKey = `${lastCtxKey}:${hex4(nextCpu)}`;
+    const reasons = [];
+
+    const siteStates = Array.isArray(debug?.cfg?.siteDebugStates) ? debug.cfg.siteDebugStates : [];
+    const siteState = siteStates.find((s) => s?.siteKey === nextSiteKey) || null;
+    if (siteState?.ctxKey) {
+      if (siteState.ctxKey === lastCtxKey) {
+        reasons.push(`Gap start context matches the preceding block context (${lastCtxKey}).`);
+      } else {
+        reasons.push(`Gap start context is ${siteState.ctxKey}, but the preceding block context is ${lastCtxKey}.`);
+      }
+    } else {
+      reasons.push(`Preceding block context is ${lastCtxKey}; gap start context was not recorded.`);
+    }
+    if (siteState) {
+      if (siteState.leaderKind === 'hard') reasons.push(`Gap start $${hex4(nextCpu)} is a hard leader/start site.`);
+      else if (siteState.leaderKind === 'soft') reasons.push(`Gap start $${hex4(nextCpu)} is a soft leader/start site.`);
+
+      const leaderReasons = Array.isArray(siteState.leaderReasons) ? siteState.leaderReasons.slice().sort((a, b) => leaderReasonPriority(a) - leaderReasonPriority(b)) : [];
+      const leaderReasonText = leaderReasons.map((r) => formatLeaderReason(r, nextCpu)).find(Boolean) || null;
+      if (leaderReasonText && !reasons.includes(leaderReasonText)) reasons.push(leaderReasonText);
+
+      if (siteState.wasScheduled && siteState.wasAttempted && siteState.wasDecoded) {
+        reasons.push('It was scheduled, attempted, and decoded, but no block was materialized.');
+      } else if (siteState.wasScheduled && siteState.wasAttempted) {
+        reasons.push('It was scheduled and attempted, but no decoded block was materialized.');
+      } else if (siteState.wasScheduled) {
+        reasons.push('It was scheduled as a start site, but never attempted.');
+      } else if (siteState.wasAttempted) {
+        reasons.push('It was attempted as a start site, but no decoded block was materialized.');
+      }
+
+      if (siteState.decodeFailureReason) reasons.push(`Attempt failed because ${mapDecodeFailureReason(siteState.decodeFailureReason)}.`);
+    }
+
+    const failures = Array.isArray(debug?.decodeFailuresByPc) ? debug.decodeFailuresByPc : [];
+    const failure = failures.find((f) => ((f?.pc ?? null) === nextCpu) && (((f?.ctxKey) || 'nrom:fixed') === lastCtxKey));
+    if (failure && !reasons.some((r) => r.includes('Attempt failed because'))) {
+      reasons.push(`Attempt failed because ${mapDecodeFailureReason(failure.reason)}.`);
+    }
+
+    const unresolved = Array.isArray(debug?.cfg?.unresolvedDirectTargets) ? debug.cfg.unresolvedDirectTargets : [];
+    const unresolvedHit = unresolved.find((u) => ((u?.target ?? null) === nextCpu) && ((((u?.targetCtxKey) || (u?.ctxKey)) || 'nrom:fixed') === lastCtxKey));
+    if (unresolvedHit) reasons.push(`Decoded control flow targeted $${hex4(nextCpu)}, but that start site did not materialize as a block.`);
+
+    const flowType = lastLine?.flow?.type || null;
+    if (!reasons.length && flowType === 'next') {
+      reasons.push(`Likely split at a leader/start site near $${hex4(nextCpu)} that did not materialize as a block.`);
+    }
+    if (!reasons.length) reasons.push('Likely an undecoded island between discovered blocks.');
+
+    return Array.from(new Set(reasons));
+  }
 
   const blockIdToTimelineIndex = useMemo(() => {
     const m = new Map();
@@ -314,7 +453,15 @@ export function BlockStack({
                 className="nv-virt-row"
                 style={rowStyle}
               >
-                <GapCard item={item} />
+                <GapCard
+                  item={item}
+                  showBytes={!!shownGapBytesByKey?.[item.gapKey || `gap:${item.type}:${item.romStart}:${item.romEnd}`]}
+                  bytesText={gapBytesByKey?.[item.gapKey || `gap:${item.type}:${item.romStart}:${item.romEnd}`] || ''}
+                  isLoadingBytes={!!gapBytesLoadingByKey?.[item.gapKey || `gap:${item.type}:${item.romStart}:${item.romEnd}`]}
+                  onContextMenuGap={onContextMenuGap}
+                  showDebugInfo={showDebugInfo}
+                  debugReasons={synthesizeGapDebugReason(item, vr.index)}
+                />
               </div>
             );
           }
@@ -345,7 +492,7 @@ export function BlockStack({
                 onNavigateToCpuAddr={onNavigateToCpuAddr}
                 canNavigateCpuAddr={canNavigateCpuAddr}
                 resolveBlockIdForCpuAddr={resolveBlockIdForCpuAddr}
-                labelsByRomOff={labelsByRomOff}
+                labelsBySite={labelsBySite}
                 labelsByAddr={labelsByAddr}
                 onHoverLine={onHoverLine}
                 onContextMenuLine={onContextMenuLine}

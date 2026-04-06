@@ -2,6 +2,8 @@ import { BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -52,9 +54,9 @@ export function showRomListWindow({ selectFolder = false } = {}) {
     return;
   }
 
+  const { bounds, maximized } = getInitialWindowStateSync('romList', { width: 760, height: 820 });
   romListWindow = new BrowserWindow({
-    width: 760,
-    height: 820,
+    ...bounds,
     parent: mainWindow || undefined,
     autoHideMenuBar: true,
     webPreferences: {
@@ -62,6 +64,9 @@ export function showRomListWindow({ selectFolder = false } = {}) {
       contextIsolation: true
     }
   });
+
+  applyMaximizedIfNeeded(romListWindow, maximized);
+  attachSaveOnClose(romListWindow, 'romList');
 
   // Hide menu bar on Windows/Linux. (macOS uses a global app menu.)
   try {

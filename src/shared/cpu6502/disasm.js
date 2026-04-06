@@ -1,5 +1,6 @@
 import { OPCODES } from './opcodes.js';
 import { hex2, hex4 } from './fmt.js';
+import { exactBacking, fetchCtxKey, siteKeyFor, unknownBacking } from '../analyze/fetchContext.js';
 
 const MODE_LEN = {
   imp: 1,
@@ -64,7 +65,6 @@ function fmtOperand(mode, bytes, pc) {
 }
 
 function flowInfo(mnemonic, mode, bytes, pc, len) {
-  // We classify only the control-flow relevant instructions here; everything else is "fallthrough". 🤖
   if (BRANCHES.has(mnemonic) && mode === 'rel') {
     const target = (pc + 2 + s8(bytes[1])) & 0xffff;
     return { type: 'branch', mnemonic, target, fallthrough: (pc + 2) & 0xffff };
@@ -80,8 +80,6 @@ function flowInfo(mnemonic, mode, bytes, pc, len) {
   }
 
   if (mnemonic === 'JMP' && mode === 'ind') {
-    // JMP (addr) uses a 16-bit pointer stored in CPU memory; on NMOS 6502 there is a page-wrap quirk for addr=$xxFF. 🤖
-    // We keep the pointer address here; later phases decide whether we can resolve it statically (e.g., if addr is in zero page). 🤖
     return { type: 'jmp_ind', ptrAddr: u16le(bytes, 1) };
   }
 
@@ -92,17 +90,24 @@ function flowInfo(mnemonic, mode, bytes, pc, len) {
   return { type: 'next', next: (pc + len) & 0xffff };
 }
 
-export function disasmOne(prgBytes, pc, romOff) {
-  // disasmOne decodes a single instruction at CPU address pc. 🤖
-  // romOff is the resolved PRG ROM offset for this pc under a mapping context; it is used to fetch bytes from the file. 🤖
+export function disasmOne(prgBytes, pc, romOff, extra = null) {
   const opByte = prgBytes[romOff];
   const entry = OPCODES[opByte];
+  const ctxKey = extra?.ctxKey || 'nrom:fixed';
+  const backing = extra?.backing || exactBacking(romOff);
+  const base = {
+    pc,
+    cpuAddr: pc & 0xffff,
+    ctxKey,
+    siteKey: siteKeyFor(ctxKey, pc & 0xffff),
+    backing,
+    romOff
+  };
 
   if (!entry) {
     return {
       ok: false,
-      pc,
-      romOff,
+      ...base,
       op: opByte,
       mnemonic: '???',
       mode: 'imp',
@@ -117,14 +122,12 @@ export function disasmOne(prgBytes, pc, romOff) {
   const len = MODE_LEN[entry.mode] ?? 1;
   const bytes = Array.from(prgBytes.subarray(romOff, romOff + len));
   const bytesText = bytes.map(hex2).join(' ');
-
   const operand = fmtOperand(entry.mode, bytes, pc);
   const text = operand ? `${entry.mnemonic} ${operand}` : entry.mnemonic;
 
   return {
     ok: true,
-    pc,
-    romOff,
+    ...base,
     op: opByte,
     mnemonic: entry.mnemonic,
     mode: entry.mode,
@@ -136,14 +139,20 @@ export function disasmOne(prgBytes, pc, romOff) {
   };
 }
 
-export function disasmOneAt(prgBytes, mapper, pc) {
-  // Resolve CPU address -> PRG ROM offset for the current mapping context, then decode. 🤖
-  // If the address is unmapped (e.g. RAM or bank not currently mapped), return ok:false so discovery stops that path. 🤖
-  const romOff = mapper.cpuToRomOff(pc & 0xffff);
-  if (romOff == null) {
+export function disasmOneAtCtx(prgBytes, mapper, fetchCtx, pc) {
+  const resolved = mapper.resolveCodeFetch
+    ? mapper.resolveCodeFetch(fetchCtx, pc & 0xffff)
+    : { ok: true, ctxKey: fetchCtxKey(fetchCtx), backing: exactBacking(mapper.cpuToRomOff(pc & 0xffff)) };
+  const romOff = resolved?.backing?.kind === 'exact' ? resolved.backing.romOff : null;
+  const ctxKey = resolved?.ctxKey || fetchCtxKey(fetchCtx);
+  if (!resolved?.ok || romOff == null) {
     return {
       ok: false,
       pc: pc & 0xffff,
+      cpuAddr: pc & 0xffff,
+      ctxKey,
+      siteKey: siteKeyFor(ctxKey, pc & 0xffff),
+      backing: resolved?.backing || unknownBacking(),
       romOff: null,
       op: null,
       mnemonic: '???',
@@ -155,5 +164,13 @@ export function disasmOneAt(prgBytes, mapper, pc) {
       flow: { type: 'unmapped' }
     };
   }
-  return disasmOne(prgBytes, pc & 0xffff, romOff);
+  return disasmOne(prgBytes, pc & 0xffff, romOff, {
+    ctxKey,
+    backing: resolved.backing || exactBacking(romOff)
+  });
+}
+
+export function disasmOneAt(prgBytes, mapper, pc) {
+  const fetchCtx = mapper?.initialFetchCtx ? mapper.initialFetchCtx() : null;
+  return disasmOneAtCtx(prgBytes, mapper, fetchCtx, pc);
 }

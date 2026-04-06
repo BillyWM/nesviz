@@ -1,10 +1,9 @@
-import { disasmOneAt } from '../../cpu6502/disasm.js';
-import { blockIdFromRomOff } from '../model.js';
+import { disasmOneAtCtx } from '../../cpu6502/disasm.js';
+import { evaluateProbableSemanticRepeats } from '../probable/semanticRepeats.js';
+import { blockIdFromRomOff, blockInstanceId } from '../model.js';
 import { decodePrgCdlByte, isPrgDataObserved } from '../cdl/nesCdl.js';
-
-// This module builds a conservative control-flow graph by decoding from known entrypoints. 🤖
-// It does not try to "disassemble the whole ROM"; it only decodes bytes that appear reachable from vectors and resolved targets. 🤖
-// Any time we hit an unmapped address or an illegal opcode, we stop following that path (we assume we were wrong about code). 🤖
+import { fetchCtxKey, siteKeyFor } from '../fetchContext.js';
+import { evalInstructionIntoRegisterState, initialRegisterState, valueStateForStore } from './registerState.js';
 
 function confRank(c) {
   return c === 'certain' ? 2 : c === 'probable' ? 1 : 0;
@@ -14,95 +13,241 @@ function bestOf(a, b) {
   return confRank(a) >= confRank(b) ? a : b;
 }
 
-// seedItems: [{ cpuAddr, confidence }]
-// If seedItems is omitted, we fall back to entrypointsCpuAddrs/extraEntrypointsCpuAddrs and treat them as "certain". 🤖
+function u16le(bytes, off = 1) {
+  return ((bytes?.[off] || 0) | ((bytes?.[off + 1] || 0) << 8)) & 0xffff;
+}
+
+function isMemoryWriteMnemonic(mnemonic) {
+  return ['STA', 'STX', 'STY', 'INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR'].includes(mnemonic);
+}
+
+function getExactWriteCpuAddr(instr, regState) {
+  if (!instr || !Array.isArray(instr.bytes)) return null;
+  if (!isMemoryWriteMnemonic(instr.mnemonic)) return null;
+  const mode = instr.mode || null;
+  if (mode === 'abs') return u16le(instr.bytes, 1);
+  if (mode === 'abs_x') {
+    const base = u16le(instr.bytes, 1);
+    const x = regState?.X;
+    if (x?.kind === 'exact') return (base + (x.value & 0xff)) & 0xffff;
+    return null;
+  }
+  if (mode === 'abs_y') {
+    const base = u16le(instr.bytes, 1);
+    const y = regState?.Y;
+    if (y?.kind === 'exact') return (base + (y.value & 0xff)) & 0xffff;
+    return null;
+  }
+  return null;
+}
+
+function isFixedMapper(mapper) {
+  return mapper?.id === 'nrom';
+}
+
+function isCertainHardLeaderReason(reason) {
+  const kind = reason?.kind || null;
+  return kind === 'branch_target'
+    || kind === 'jump_target'
+    || kind === 'call_target'
+    || kind === 'mapper_split'
+    || kind === 'seed_entry';
+}
+
 export function discoverCfg({
   prgBytes,
   mapper,
-  ctxId,
+  fetchCtx,
   seedItems = null,
-  // Optional PRG CDL overlay. When present, we treat bytes observed as *data-only* (read as data but not executed)
-  // as authoritative and refuse to decode instructions starting there. This makes data gaps appear explicitly
-  // and prevents static decoding from plowing through tables / literals.
   cdlPrg = null,
+  probableConfig = null,
   entrypointsCpuAddrs = [],
-  extraEntrypointsCpuAddrs = [],
-  maxPasses = 3
+  extraEntrypointsCpuAddrs = []
 }) {
-  // We iterate because later passes may add new entrypoints (e.g. jump-table targets). 🤖
   const seeds = Array.isArray(seedItems)
     ? seedItems
-    : [...entrypointsCpuAddrs.map((cpuAddr) => ({ cpuAddr, confidence: 'certain' })), ...extraEntrypointsCpuAddrs.map((cpuAddr) => ({ cpuAddr, confidence: 'certain' }))];
+    : [
+        ...entrypointsCpuAddrs.map((cpuAddr) => ({ cpuAddr, confidence: 'certain', fetchCtx })),
+        ...extraEntrypointsCpuAddrs.map((cpuAddr) => ({ cpuAddr, confidence: 'certain', fetchCtx }))
+      ];
 
-  const bestConfByPc = new Map(); // pc -> "certain" | "probable" 🤖
-  const instrByPc = new Map(); // pc -> decoded instruction 🤖
-  const decodeFailuresByPc = new Map(); // start pc -> { pc, reason, romOff, op, bytesText, text } 🤖
-  const scheduledStarts = new Set(); // pc values currently queued for decoding 🤖
-  const attemptedStarts = new Set(); // pc values we've popped and tried to decode at least once 🤖
+  const bestConfBySite = new Map();
+  const instrBySite = new Map();
+  const decodeFailuresBySite = new Map();
+  const queuedHard = [];
+  const queuedSoft = [];
+  const hardLeaderSites = new Set();
+  const softLeaderSites = new Set();
+  const unresolvedIndirects = [];
+  const probableProbeOffsetsSet = new Set();
+  const startRecordsBySite = new Map();
 
-  let queued = []; // { pc, conf } (decode-start worklist) 🤖
-
-  function isCdlDataOnlyPc(pc) {
-    if (!cdlPrg) return false;
-    const romOff = mapper.cpuToRomOff(pc & 0xffff);
-    if (romOff == null) return false;
-    if (romOff < 0 || romOff >= cdlPrg.length) return false;
-    const flags = decodePrgCdlByte(cdlPrg[romOff]);
-    // "Code wins" when a byte is both exec+data.
-    return isPrgDataObserved(flags) && !flags.exec;
+  function startSiteKeyFor(pc, ctx) {
+    return siteKeyFor(fetchCtxKey(ctx || fetchCtx), pc & 0xffff);
   }
 
-  function markReachable(pc, conf) {
-    const p = pc & 0xffff;
-    const prev = bestConfByPc.get(p);
+  function getOrCreateStartRecord(pc, ctx) {
+    const activeCtx = ctx || fetchCtx;
+    const siteKey = startSiteKeyFor(pc, activeCtx);
+    let rec = startRecordsBySite.get(siteKey);
+    if (!rec) {
+      rec = {
+        siteKey,
+        pc: pc & 0xffff,
+        fetchCtx: activeCtx,
+        conf: null,
+        leaderKind: 'none',
+        leaderReasons: [],
+        wasScheduled: false,
+        wasScheduledEver: false,
+        wasAttempted: false,
+        wasDecoded: false,
+        decodeFailureReason: null,
+        isCertainHardLeader: false,
+        firstInstrSiteKey: null,
+        retryOutcome: null
+      };
+      startRecordsBySite.set(siteKey, rec);
+    } else {
+      rec.pc = pc & 0xffff;
+      rec.fetchCtx = activeCtx;
+    }
+    return rec;
+  }
+
+  function setLeaderKind(rec, leaderKind) {
+    if (!rec) return;
+    if (leaderKind === 'hard') {
+      rec.leaderKind = 'hard';
+      hardLeaderSites.add(rec.siteKey);
+      softLeaderSites.delete(rec.siteKey);
+    } else if (rec.leaderKind !== 'hard') {
+      rec.leaderKind = 'soft';
+      softLeaderSites.add(rec.siteKey);
+    }
+  }
+
+  function addLeaderReason(rec, leaderReason) {
+    if (!rec || !leaderReason || typeof leaderReason !== 'object') return;
+    const next = { ...leaderReason };
+    if (typeof next.fromPc === 'number') next.fromPc &= 0xffff;
+    if (typeof next.targetPc === 'number') next.targetPc &= 0xffff;
+    const sig = JSON.stringify(next);
+    if (rec.leaderReasons.some((r) => JSON.stringify(r) === sig)) return;
+    rec.leaderReasons.push(next);
+    if (rec.leaderKind === 'hard' && rec.leaderReasons.some((r) => isCertainHardLeaderReason(r))) {
+      rec.isCertainHardLeader = true;
+    }
+  }
+
+  function markReachable(siteKey, conf) {
+    const prev = bestConfBySite.get(siteKey);
     const next = prev ? bestOf(prev, conf) : conf;
     if (prev && prev === next) return false;
-    bestConfByPc.set(p, next);
+    bestConfBySite.set(siteKey, next);
     return true;
   }
 
-  function enqueueStart(pc, conf) {
-    const p = pc & 0xffff;
-    // Always record reachability, but don't let that suppress scheduling a decode attempt. 🤖
-    // We want "JSR $xxxx" and friends to force a decode attempt even if the PC was already marked reachable via some other path. 🤖
-    markReachable(p, conf);
+  function isCdlDataOnlySite(pc, ctx) {
+    if (!cdlPrg) return false;
+    const resolved = mapper.resolveCodeFetch ? mapper.resolveCodeFetch(ctx || fetchCtx, pc & 0xffff) : null;
+    const romOff = resolved?.backing?.kind === 'exact' ? resolved.backing.romOff : null;
+    if (romOff == null || romOff < 0 || romOff >= cdlPrg.length) return false;
+    const flags = decodePrgCdlByte(cdlPrg[romOff]);
+    return isPrgDataObserved(flags) && !flags.exec;
+  }
 
-    // If we've already decoded an instruction at this address, no need to schedule it again. 🤖
-    if (instrByPc.has(p)) return;
+  function queueRecord(rec) {
+    if (!rec || rec.wasScheduled) return;
+    rec.wasScheduled = true;
+    rec.wasScheduledEver = true;
+    (rec.leaderKind === 'hard' ? queuedHard : queuedSoft).push(rec.siteKey);
+  }
 
-    // Avoid infinite churn: only attempt each start PC once per discoverCfg() call. 🤖
-    if (attemptedStarts.has(p)) return;
+  function enqueueStart(pc, conf, ctx, leaderKind = 'hard', leaderReason = null) {
+    const rec = getOrCreateStartRecord(pc, ctx);
+    markReachable(rec.siteKey, conf);
+    rec.conf = rec.conf ? bestOf(rec.conf, conf || 'certain') : (conf || 'certain');
 
-    if (scheduledStarts.has(p)) return;
-    scheduledStarts.add(p);
-    queued.push({ pc: p, conf: bestConfByPc.get(p) || conf || 'certain' });
+    const prevLeaderKind = rec.leaderKind;
+    const prevCertain = rec.isCertainHardLeader;
+    setLeaderKind(rec, leaderKind);
+    addLeaderReason(rec, leaderReason);
+
+    if (instrBySite.has(rec.siteKey)) {
+      rec.wasDecoded = true;
+      rec.firstInstrSiteKey = rec.siteKey;
+      return rec;
+    }
+
+    const upgradedToCertainHard = !prevCertain && rec.isCertainHardLeader;
+    const upgradedToHard = prevLeaderKind !== 'hard' && rec.leaderKind === 'hard';
+
+    if (rec.wasAttempted && !upgradedToCertainHard) {
+      return rec;
+    }
+
+    if (upgradedToCertainHard) {
+      rec.wasAttempted = false;
+      rec.wasDecoded = false;
+      rec.decodeFailureReason = null;
+      decodeFailuresBySite.delete(rec.siteKey);
+    }
+
+    if (rec.wasScheduled) {
+      if (upgradedToHard) {
+        queuedHard.push(rec.siteKey);
+      }
+      return rec;
+    }
+
+    queueRecord(rec);
+    return rec;
   }
 
   for (const s of seeds) {
-    if (s && typeof s.cpuAddr === 'number') enqueueStart(s.cpuAddr, s.confidence || 'certain');
+    if (s && typeof s.cpuAddr === 'number') {
+      const confidence = s.confidence || 'certain';
+      const leaderKind = s.leaderKind || (confidence === 'probable' ? 'soft' : 'hard');
+      const leaderReason = s.leaderReason || (confidence === 'probable'
+        ? { kind: 'probable_seed' }
+        : { kind: 'seed_entry' });
+      enqueueStart(s.cpuAddr, confidence, s.fetchCtx || fetchCtx, leaderKind, leaderReason);
+    }
   }
-  const unresolvedIndirects = []; // { pc, romOff, ptrAddr } (debug/telemetry) 🤖
 
-  // We use a single worklist so we don't accidentally drop newly discovered entrypoints (e.g. a JSR target)
-  // due to an arbitrary "pass" limit. 🤖
-  while (queued.length) {
-    const item = queued.pop();
-    const startPc = (item?.pc ?? item) & 0xffff;
-    const startConf = item?.conf || bestConfByPc.get(startPc) || 'certain';
+  function decodeFromStart(rec) {
+    if (!rec) return { decoded: false, reason: 'missing_record' };
+    const startPc = (rec.pc | 0) & 0xffff;
+    const startCtx = rec.fetchCtx || fetchCtx;
+    const startConf = rec.conf || 'certain';
+    const startSiteKey = rec.siteKey;
 
-    scheduledStarts.delete(startPc);
-    attemptedStarts.add(startPc);
+    let decodedAny = false;
+    let stopReason = null;
+    let lastCtxKey = fetchCtxKey(startCtx);
 
-    // Decode linearly until control flow forces us to stop. 🤖
-    // We still enqueue branch targets, fallthroughs, and call targets so other code regions get discovered too. 🤖
+    rec.wasAttempted = true;
+
     let pc = startPc;
     let conf = startConf;
+    let curCtx = startCtx;
+    let regState = initialRegisterState();
+
     while (true) {
-      if (isCdlDataOnlyPc(pc)) {
-        if (pc === startPc && !decodeFailuresByPc.has(startPc)) {
-          const romOff = mapper.cpuToRomOff(startPc & 0xffff);
-          decodeFailuresByPc.set(startPc, {
+      const curCtxKey = fetchCtxKey(curCtx);
+      lastCtxKey = curCtxKey;
+      const curSiteKey = siteKeyFor(curCtxKey, pc);
+
+      if (isCdlDataOnlySite(pc, curCtx)) {
+        stopReason = 'cdl_data';
+        if (curSiteKey === startSiteKey && !decodeFailuresBySite.has(startSiteKey)) {
+          const resolved = mapper.resolveCodeFetch ? mapper.resolveCodeFetch(curCtx, startPc) : null;
+          const romOff = resolved?.backing?.kind === 'exact' ? resolved.backing.romOff : null;
+          decodeFailuresBySite.set(startSiteKey, {
+            siteKey: startSiteKey,
             pc: startPc,
+            ctxKey: curCtxKey,
             reason: 'cdl_data',
             romOff,
             op: null,
@@ -112,15 +257,16 @@ export function discoverCfg({
         }
         break;
       }
-      // Even if we've already decoded this PC, we still want to propagate improved reachability/confidence forward. 🤖
-      // So we fetch the cached instruction when present instead of stopping early. 🤖
-      const cached = instrByPc.get(pc);
-      const instr = cached || disasmOneAt(prgBytes, mapper, pc);
+
+      const cached = instrBySite.get(curSiteKey);
+      const instr = cached || disasmOneAtCtx(prgBytes, mapper, curCtx, pc);
       if (!instr.ok) {
-        // Record why decoding failed at a scheduled entrypoint so we can debug "why didn't this split the unknown gap?" 🤖
-        if (pc === startPc && !decodeFailuresByPc.has(startPc)) {
-          decodeFailuresByPc.set(startPc, {
+        stopReason = instr?.flow?.type || 'unknown';
+        if (curSiteKey === startSiteKey && !decodeFailuresBySite.has(startSiteKey)) {
+          decodeFailuresBySite.set(startSiteKey, {
+            siteKey: startSiteKey,
             pc: startPc,
+            ctxKey: curCtxKey,
             reason: instr?.flow?.type || 'unknown',
             romOff: instr.romOff,
             op: instr.op,
@@ -130,209 +276,366 @@ export function discoverCfg({
         }
         break;
       }
-      if (!cached) instrByPc.set(pc, instr);
 
-      // Mark this instruction as reachable under this confidence. 🤖
-      markReachable(pc, conf);
+      decodedAny = true;
+      if (!cached) {
+        instrBySite.set(curSiteKey, instr);
+      }
+      markReachable(curSiteKey, conf);
+      if (curSiteKey === startSiteKey) {
+        rec.wasDecoded = true;
+        rec.firstInstrSiteKey = startSiteKey;
+      }
+
+      const storeCpuAddr = getExactWriteCpuAddr(instr, regState);
+      const nextPc = (pc + instr.len) & 0xffff;
+      if (storeCpuAddr != null && mapper.isMapperWriteCpuAddr?.(storeCpuAddr)) {
+        const valueState = valueStateForStore(instr, regState);
+        const nextCtx = mapper.applyMapperWrite({ ctx: curCtx, cpuAddr: storeCpuAddr, valueState });
+        const nextSiteKey = siteKeyFor(fetchCtxKey(nextCtx), nextPc);
+        enqueueStart(nextPc, conf, nextCtx, 'hard', { kind: 'mapper_split', fromPc: pc, mnemonic: instr.mnemonic, targetPc: nextPc });
+        const enriched = { ...instr, mapperWrite: { cpuAddr: storeCpuAddr, nextFetchCtx: nextCtx, nextSiteKey } };
+        instrBySite.set(curSiteKey, enriched);
+        stopReason = 'mapper_split';
+        break;
+      }
 
       const f = instr.flow;
       if (f.type === 'branch') {
-        enqueueStart(f.target, conf);
-        markReachable(f.fallthrough, conf);
-        // Keep decoding fallthrough linearly too; if we stop early here we'd need a separate pass to get straight-line code. 🤖
-        pc = f.fallthrough;
-        continue;
+        const takenTargets = mapper.targetSitesForCpuAddr
+          ? mapper.targetSitesForCpuAddr(curCtx, f.target, { maxForks: 4 })
+          : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: curCtx }], ambiguous: false };
+        for (const t of takenTargets.sites || []) {
+          enqueueStart(t.cpuAddr, conf, t.fetchCtx, 'hard', { kind: 'branch_target', fromPc: pc, mnemonic: instr.mnemonic, targetPc: t.cpuAddr });
+        }
+        enqueueStart(f.fallthrough, conf, curCtx, 'hard', { kind: 'fallthrough_seed', fromPc: pc, mnemonic: instr.mnemonic, targetPc: f.fallthrough });
+        stopReason = 'branch';
+        break;
       }
 
       if (f.type === 'call') {
-        enqueueStart(f.target, conf);
-        // Calls return; keep decoding the next instruction as well. 🤖
-        pc = f.fallthrough;
-        continue;
+        const callTargets = mapper.targetSitesForCpuAddr
+          ? mapper.targetSitesForCpuAddr(curCtx, f.target, { maxForks: 4 })
+          : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: curCtx }], ambiguous: false };
+        for (const t of callTargets.sites || []) {
+          enqueueStart(t.cpuAddr, conf, t.fetchCtx, 'hard', { kind: 'call_target', fromPc: pc, mnemonic: instr.mnemonic, targetPc: t.cpuAddr });
+        }
+        enqueueStart(f.fallthrough, conf, curCtx, 'hard', { kind: 'fallthrough_seed', fromPc: pc, mnemonic: instr.mnemonic, targetPc: f.fallthrough });
+        stopReason = 'call';
+        break;
       }
 
       if (f.type === 'jump') {
-        enqueueStart(f.target, conf);
+        const jumpTargets = mapper.targetSitesForCpuAddr
+          ? mapper.targetSitesForCpuAddr(curCtx, f.target, { maxForks: 4 })
+          : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: curCtx }], ambiguous: false };
+        for (const t of jumpTargets.sites || []) {
+          enqueueStart(t.cpuAddr, conf, t.fetchCtx, 'hard', { kind: 'jump_target', fromPc: pc, mnemonic: instr.mnemonic, targetPc: t.cpuAddr });
+        }
+        stopReason = 'jump';
         break;
       }
 
       if (f.type === 'jmp_ind') {
-        unresolvedIndirects.push({ pc, romOff: instr.romOff, ptrAddr: f.ptrAddr });
+        unresolvedIndirects.push({ pc, romOff: instr.romOff, ptrAddr: f.ptrAddr, ctxKey: curCtxKey, siteKey: curSiteKey });
+        stopReason = 'jmp_ind';
         break;
       }
 
-      if (f.type === 'stop' || f.type === 'illegal') {
+      if (f.type === 'stop' || f.type === 'illegal' || f.type === 'unmapped') {
+        stopReason = f.type;
         break;
       }
 
-      // Default fallthrough. 🤖
-      pc = (pc + instr.len) & 0xffff;
+      regState = evalInstructionIntoRegisterState(instr, regState);
+      const nextSiteKey = siteKeyFor(curCtxKey, nextPc);
+      if (hardLeaderSites.has(nextSiteKey)) {
+        enqueueStart(nextPc, conf, curCtx, 'hard', { kind: 'fallthrough_seed', fromPc: pc, mnemonic: instr.mnemonic, targetPc: nextPc });
+        stopReason = 'hard_leader_boundary';
+        break;
+      }
+      pc = nextPc;
     }
+
+    rec.retryOutcome = decodedAny ? 'decoded' : (stopReason || 'no_progress');
+    if (!rec.wasDecoded) {
+      rec.decodeFailureReason = decodeFailuresBySite.get(startSiteKey)?.reason || stopReason || null;
+    }
+
+    return { decoded: rec.wasDecoded, reason: stopReason, ctxKey: lastCtxKey };
   }
 
+  while (queuedHard.length || queuedSoft.length) {
+    const siteKey = queuedHard.length ? queuedHard.pop() : queuedSoft.pop();
+    if (!siteKey) break;
+    const rec = startRecordsBySite.get(siteKey);
+    if (!rec || !rec.wasScheduled) continue;
+    rec.wasScheduled = false;
+    if (instrBySite.has(siteKey)) {
+      rec.wasDecoded = true;
+      rec.firstInstrSiteKey = siteKey;
+      continue;
+    }
+    if (rec.wasAttempted) continue;
+    decodeFromStart(rec);
+  }
 
-  const leaders = new Set();
-  for (const s of seeds) leaders.add((s.cpuAddr ?? s) & 0xffff);
-
-  // Any instruction that can be the target of a branch/jump/call is a leader. 🤖
-  for (const instr of instrByPc.values()) {
+  const absorbedSoftLeaderSites = new Set();
+  for (const instr of instrBySite.values()) {
+    if (!instr || instr.mapperWrite) continue;
+    if (instr.backing?.kind !== 'exact') continue;
     const f = instr.flow;
-    if (f.type === 'branch') {
-      leaders.add(f.target & 0xffff);
-      leaders.add(f.fallthrough & 0xffff);
-    } else if (f.type === 'call') {
-      leaders.add(f.target & 0xffff);
-      leaders.add(f.fallthrough & 0xffff); // we split blocks after calls for nicer graphs and easier local reasoning. 🤖
-    } else if (f.type === 'jump') {
-      leaders.add(f.target & 0xffff);
-    }
+    if (!f || ['branch', 'call', 'jump', 'jmp_ind', 'stop', 'illegal', 'unmapped'].includes(f.type)) continue;
+    const nextPc = ((instr.pc | 0) + (instr.len | 0)) & 0xffff;
+    const nextSiteKey = siteKeyFor(instr.ctxKey, nextPc);
+    if (!softLeaderSites.has(nextSiteKey) || hardLeaderSites.has(nextSiteKey)) continue;
+    const nextInstr = instrBySite.get(nextSiteKey);
+    if (nextInstr?.backing?.kind === 'exact') absorbedSoftLeaderSites.add(nextSiteKey);
   }
 
-  // Build blocks from leaders by walking forward until a terminator or another leader. 🤖
-  const leaderList = Array.from(leaders).sort((a, b) => a - b);
-  const blocksByCpuStart = new Map();
+  const materializedStartRecords = Array.from(startRecordsBySite.values())
+    .filter((rec) => typeof rec.pc === 'number')
+    .filter((rec) => rec.wasDecoded && !!instrBySite.get(rec.siteKey))
+    .filter((rec) => !(rec.leaderKind === 'soft' && absorbedSoftLeaderSites.has(rec.siteKey)))
+    .sort((a, b) => {
+      const ctxCmp = String(fetchCtxKey(a.fetchCtx)).localeCompare(String(fetchCtxKey(b.fetchCtx)));
+      if (ctxCmp) return ctxCmp;
+      return (a.pc | 0) - (b.pc | 0);
+    });
+
+  const blocksByStartSite = new Map();
   const blocksById = new Map();
 
-  for (const startPc of leaderList) {
-    if (blocksByCpuStart.has(startPc)) continue;
-    if (!instrByPc.has(startPc)) continue;
+  function shouldKeepProbableBlock(lines) {
+    if (!probableConfig || !Array.isArray(lines) || !lines.length) return { keep: true, semantic: null };
+    const decodedBytes = lines.reduce((sum, ln) => sum + ((ln?.len | 0) || 0), 0);
+    const semantic = evaluateProbableSemanticRepeats({
+      instructions: lines,
+      decodedBytes,
+      config: probableConfig
+    });
+    if (semantic.hardRejected) return { keep: false, semantic };
+    const threshold = probableConfig.probableCfgSemanticPenaltyRejectThreshold;
+    if (typeof threshold === 'number' && (semantic.repeatPatternPenalty || 0) <= threshold) {
+      return { keep: false, semantic };
+    }
+    return { keep: true, semantic };
+  }
 
-    const firstInstr = instrByPc.get(startPc);
-    const romStart = firstInstr.romOff;
-    const id = blockIdFromRomOff(romStart);
+  for (const rec of materializedStartRecords) {
+    if (blocksByStartSite.has(rec.siteKey)) continue;
+    const firstInstr = instrBySite.get(rec.siteKey);
+    if (!firstInstr) continue;
+    const startPc = rec.pc & 0xffff;
+    const ctxKey = fetchCtxKey(rec.fetchCtx);
+    const exactStart = firstInstr.backing?.kind === 'exact' ? firstInstr.backing.romOff : null;
+    const blockId = (isFixedMapper(mapper) && exactStart != null) ? blockIdFromRomOff(exactStart) : blockInstanceId(ctxKey, startPc);
+    const instId = blockInstanceId(ctxKey, startPc);
 
-    // Collect lines. 🤖
     const lines = [];
     let pc = startPc;
+    let curCtx = rec.fetchCtx;
     while (true) {
-      const instr = instrByPc.get(pc);
+      const curCtxKey = fetchCtxKey(curCtx);
+      const curSiteKey = siteKeyFor(curCtxKey, pc);
+      const instr = instrBySite.get(curSiteKey);
       if (!instr) break;
       lines.push({
         cpuAddr: pc,
+        ctxKey: curCtxKey,
+        siteKey: instr.siteKey,
+        backing: instr.backing,
         romOff: instr.romOff,
         len: instr.len,
         bytesText: instr.bytesText,
         asm: instr.text,
         mnemonic: instr.mnemonic,
         mode: instr.mode,
-        flow: instr.flow
+        flow: instr.flow,
+        bytes: instr.bytes,
+        mapperWrite: instr.mapperWrite || null
       });
-
       const nextPc = (pc + instr.len) & 0xffff;
-      const isTerm = ['branch', 'call', 'jump', 'jmp_ind', 'stop', 'illegal'].includes(instr.flow.type);
-      if (isTerm) {
-        pc = nextPc;
-        break;
-      }
-      if (leaders.has(nextPc)) {
-        pc = nextPc;
-        break;
-      }
+      if (instr.mapperWrite) break;
+      const isTerm = ['branch', 'call', 'jump', 'jmp_ind', 'stop', 'illegal', 'unmapped'].includes(instr.flow.type);
+      if (isTerm) break;
+      const nextSiteKey = siteKeyFor(curCtxKey, nextPc);
+      if (hardLeaderSites.has(nextSiteKey)) break;
       pc = nextPc;
     }
 
-    const romEnd = lines.length ? lines[lines.length - 1].romOff + lines[lines.length - 1].len : romStart;
+    const exactRomOffs = lines.map((ln) => (ln.backing?.kind === 'exact' ? ln.backing.romOff : null)).filter((v) => typeof v === 'number');
+    const romStart = exactRomOffs.length ? Math.min(...exactRomOffs) : null;
+    const romEnd = lines.length && exactRomOffs.length
+      ? ((lines[lines.length - 1].backing?.kind === 'exact')
+          ? (lines[lines.length - 1].backing.romOff + lines[lines.length - 1].len)
+          : (romStart + lines.reduce((n, ln) => n + (ln.len | 0), 0)))
+      : null;
 
-    let block = blocksById.get(id);
-    if (!block) {
-      block = {
-        id,
-        romStart,
-        romEnd,
-        confidence: bestConfByPc.get(startPc) || 'certain',
-        instances: [],
-        lines
-      };
-      blocksById.set(id, block);
-    } else {
-      // If we later discover this same physical block from a higher-confidence entrypoint, upgrade it. 🤖
-      block.confidence = bestOf(block.confidence, bestConfByPc.get(startPc) || 'certain');
-    }
+    const blockConfidence = bestConfBySite.get(rec.siteKey) || rec.conf || 'certain';
+    const probableFilter = (blockConfidence === 'probable') ? shouldKeepProbableBlock(lines) : { keep: true, semantic: null };
+    if (!probableFilter.keep) continue;
 
-    block.instances.push({ ctxId, cpuStart: startPc });
-    blocksByCpuStart.set(startPc, id);
+    const block = {
+      id: blockId,
+      romStart,
+      romEnd,
+      confidence: blockConfidence,
+      ctxKey,
+      blockInstanceId: instId,
+      instances: [{ ctxId: ctxKey, fetchCtxKey: ctxKey, blockInstanceId: instId, cpuStart: startPc }],
+      lines,
+      probableSemantic: probableFilter.semantic
+    };
+    blocksById.set(blockId, block);
+    blocksByStartSite.set(rec.siteKey, blockId);
   }
 
-  // Edges at the block level (primarily for callgraph / CFG). 🤖
   const edges = [];
   const unresolved = [];
+
+  function addResolvedEdges(fromBlock, targets, kind, extra = {}) {
+    for (const t of targets || []) {
+      const tCtxKey = fetchCtxKey(t.fetchCtx);
+      const tSiteKey = siteKeyFor(tCtxKey, t.cpuAddr);
+      const toId = blocksByStartSite.get(tSiteKey) || null;
+      edges.push({ from: fromBlock.id, to: toId, kind, ctxKey: fromBlock.ctxKey, toPc: t.cpuAddr & 0xffff, toCtxKey: tCtxKey, toSiteKey: tSiteKey, ...extra });
+    }
+  }
 
   for (const block of blocksById.values()) {
     const last = block.lines[block.lines.length - 1];
     if (!last) continue;
-
-    const from = block.id;
+    const startRec = startRecordsBySite.get(siteKeyFor(block.ctxKey, block.lines[0].cpuAddr));
+    const currentCtx = startRec?.fetchCtx || fetchCtx;
     const f = last.flow;
 
-    function addEdge(kind, toPc, extra = {}) {
-      const toId = blocksByCpuStart.get(toPc & 0xffff) || null;
-      edges.push({ from, to: toId, kind, toPc: toPc & 0xffff, ...extra });
+    if (last.mapperWrite) {
+      const nextCtx = last.mapperWrite.nextFetchCtx;
+      const nextPc = (last.cpuAddr + last.len) & 0xffff;
+      addResolvedEdges(block, [{ cpuAddr: nextPc, fetchCtx: nextCtx }], 'fallthrough');
+      continue;
     }
 
     if (f.type === 'branch') {
-      addEdge('branch_taken', f.target, { branch: f.mnemonic });
-      addEdge('branch_fallthrough', f.fallthrough, { branch: f.mnemonic });
+      const takenTargets = mapper.targetSitesForCpuAddr ? mapper.targetSitesForCpuAddr(currentCtx, f.target, { maxForks: 4 }) : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: currentCtx }], ambiguous: false };
+      if (takenTargets.sites?.length) addResolvedEdges(block, takenTargets.sites, 'branch_taken', { branch: f.mnemonic });
+      else if (takenTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff });
+      addResolvedEdges(block, [{ cpuAddr: f.fallthrough & 0xffff, fetchCtx: currentCtx }], 'branch_fallthrough', { branch: f.mnemonic });
     } else if (f.type === 'call') {
-      addEdge('call', f.target);
-      addEdge('fallthrough', f.fallthrough);
+      const callTargets = mapper.targetSitesForCpuAddr ? mapper.targetSitesForCpuAddr(currentCtx, f.target, { maxForks: 4 }) : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: currentCtx }], ambiguous: false };
+      if (callTargets.sites?.length) addResolvedEdges(block, callTargets.sites, 'call');
+      else if (callTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff });
+      addResolvedEdges(block, [{ cpuAddr: f.fallthrough & 0xffff, fetchCtx: currentCtx }], 'fallthrough');
     } else if (f.type === 'jump') {
-      addEdge('jump', f.target);
+      const jumpTargets = mapper.targetSitesForCpuAddr ? mapper.targetSitesForCpuAddr(currentCtx, f.target, { maxForks: 4 }) : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: currentCtx }], ambiguous: false };
+      if (jumpTargets.sites?.length) addResolvedEdges(block, jumpTargets.sites, 'jump');
+      else if (jumpTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff });
     } else if (f.type === 'jmp_ind') {
-      unresolved.push({ blockId: block.id, pc: last.cpuAddr, ptrAddr: f.ptrAddr });
+      unresolved.push({ kind: 'jmp_ind', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, ptrAddr: f.ptrAddr });
     } else {
-      // If the block ended because the next instruction was a leader (split), treat as fallthrough. 🤖
       const nextPc = (last.cpuAddr + last.len) & 0xffff;
-      if (leaders.has(nextPc)) addEdge('fallthrough', nextPc);
+      const nextSiteKey = siteKeyFor(block.ctxKey, nextPc);
+      if (hardLeaderSites.has(nextSiteKey)) addResolvedEdges(block, [{ cpuAddr: nextPc, fetchCtx: currentCtx }], 'fallthrough');
     }
   }
 
-  // Byte-level classification for View A timeline: mark any decoded instruction bytes as code. 🤖
-  const codeBitmap = new Uint8Array(prgBytes.length);
-  for (const instr of instrByPc.values()) {
-    for (let i = 0; i < instr.len; i++) {
-      const off = instr.romOff + i;
-      if (off >= 0 && off < codeBitmap.length) codeBitmap[off] = 1;
-    }
-  }
-
-
-  // Debug: direct control-flow targets that were referenced but never decoded. 🤖
-  // This often indicates we hit a hard cap (like max passes) or that the target is truly not code. 🤖
   const unresolvedDirectTargets = [];
-  for (const instr of instrByPc.values()) {
+  for (const instr of instrBySite.values()) {
     const f = instr.flow;
     if (f.type === 'call' || f.type === 'jump' || f.type === 'branch') {
-      const tgt = f.target & 0xffff;
-      if (!instrByPc.has(tgt)) {
-        unresolvedDirectTargets.push({
-          fromPc: instr.pc & 0xffff,
-          fromRomOff: instr.romOff,
-          kind: f.type,
-          target: tgt,
-          mnemonic: instr.mnemonic,
-          bytesText: instr.bytesText
-        });
+      const sourceCtx = startRecordsBySite.get(instr.siteKey)?.fetchCtx || fetchCtx;
+      const targets = mapper.targetSitesForCpuAddr
+        ? mapper.targetSitesForCpuAddr(sourceCtx, f.target, { maxForks: 4 })
+        : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: sourceCtx }], ambiguous: false };
+      if (!targets.sites?.length) {
+        unresolvedDirectTargets.push({ fromPc: instr.pc & 0xffff, fromRomOff: instr.romOff, kind: f.type, target: f.target & 0xffff, mnemonic: instr.mnemonic, bytesText: instr.bytesText, ctxKey: instr.ctxKey, siteKey: instr.siteKey });
+        continue;
+      }
+      for (const t of targets.sites) {
+        const tSiteKey = siteKeyFor(fetchCtxKey(t.fetchCtx), t.cpuAddr);
+        if (!instrBySite.has(tSiteKey)) {
+          const targetFetch = mapper.resolveCodeFetch ? mapper.resolveCodeFetch(t.fetchCtx, t.cpuAddr) : null;
+          if (targetFetch?.backing?.kind === 'exact') probableProbeOffsetsSet.add(targetFetch.backing.romOff | 0);
+          unresolvedDirectTargets.push({
+            fromPc: instr.pc & 0xffff,
+            fromRomOff: instr.romOff,
+            kind: f.type,
+            target: t.cpuAddr & 0xffff,
+            mnemonic: instr.mnemonic,
+            bytesText: instr.bytesText,
+            ctxKey: instr.ctxKey,
+            siteKey: instr.siteKey,
+            targetCtxKey: fetchCtxKey(t.fetchCtx),
+            targetSiteKey: tSiteKey
+          });
+        }
       }
     }
   }
   if (unresolvedDirectTargets.length > 200) unresolvedDirectTargets.length = 200;
+
+  const siteDebugStates = Array.from(startRecordsBySite.values()).map((rec) => {
+    const decodedInstr = instrBySite.get(rec.siteKey) || null;
+    const failure = decodeFailuresBySite.get(rec.siteKey) || null;
+    return {
+      siteKey: rec.siteKey,
+      pc: rec.pc & 0xffff,
+      ctxKey: rec.fetchCtx ? fetchCtxKey(rec.fetchCtx) : (failure?.ctxKey || decodedInstr?.ctxKey || null),
+      leaderKind: rec.leaderKind,
+      leaderReasons: rec.leaderReasons || [],
+      wasScheduled: !!rec.wasScheduledEver,
+      wasAttempted: !!rec.wasAttempted,
+      wasDecoded: !!rec.wasDecoded,
+      decodeFailureReason: rec.decodeFailureReason || failure?.reason || null,
+      isCertainHardLeader: !!rec.isCertainHardLeader,
+      retryOutcome: rec.retryOutcome || null
+    };
+  }).sort((a, b) => {
+    const aCtx = String(a.ctxKey || '');
+    const bCtx = String(b.ctxKey || '');
+    if (aCtx !== bCtx) return aCtx.localeCompare(bCtx);
+    return ((a.pc ?? 0) | 0) - ((b.pc ?? 0) | 0);
+  });
+
+  const blocks = Array.from(blocksById.values()).sort((a, b) => {
+    const aRom = typeof a.romStart === 'number' ? a.romStart : Number.MAX_SAFE_INTEGER;
+    const bRom = typeof b.romStart === 'number' ? b.romStart : Number.MAX_SAFE_INTEGER;
+    if (aRom !== bRom) return aRom - bRom;
+    const ctxCmp = String(a.ctxKey || '').localeCompare(String(b.ctxKey || ''));
+    if (ctxCmp) return ctxCmp;
+    const aCpu = a.lines?.[0]?.cpuAddr ?? 0;
+    const bCpu = b.lines?.[0]?.cpuAddr ?? 0;
+    return (aCpu | 0) - (bCpu | 0);
+  });
+
+  const codeBitmap = new Uint8Array(prgBytes.length);
+  for (const block of blocks) {
+    for (const line of block.lines || []) {
+      if (line.backing?.kind !== 'exact') continue;
+      for (let i = 0; i < (line.len | 0); i++) {
+        const off = line.backing.romOff + i;
+        if (off >= 0 && off < codeBitmap.length) codeBitmap[off] = 1;
+      }
+    }
+  }
+
   return {
-    blocks: Array.from(blocksById.values()).sort((a, b) => a.romStart - b.romStart),
+    blocks,
     edges,
     unresolvedSites: unresolved,
-    // unresolvedIndirects is currently unused by the UI, but can be handy for debugging. 🤖
     unresolvedIndirects,
-    // decodeFailuresByPc is debugging aid: it records why a scheduled decode-start PC did not decode any instruction. 🤖
-    // This is useful when a call/jump target "should" split an unknown region but stays unknown. 🤖
-    decodeFailuresByPc: Array.from(decodeFailuresByPc.values()).sort((a, b) => (a.pc | 0) - (b.pc | 0)),
+    decodeFailuresByPc: Array.from(decodeFailuresBySite.values()).sort((a, b) => (a.pc | 0) - (b.pc | 0)),
     debug: {
-      attemptedStartCount: attemptedStarts.size,
-      scheduledStartCount: scheduledStarts.size,
-      decodeFailureCount: decodeFailuresByPc.size,
+      attemptedStartCount: Array.from(startRecordsBySite.values()).filter((r) => r.wasAttempted).length,
+      scheduledStartCount: Array.from(startRecordsBySite.values()).filter((r) => r.wasScheduled).length,
+      decodeFailureCount: decodeFailuresBySite.size,
       unresolvedDirectTargetCount: unresolvedDirectTargets.length,
-      unresolvedDirectTargets
+      unresolvedDirectTargets,
+      siteDebugStates
     },
-    instructionCount: instrByPc.size,
-    codeBitmap
+    instructionCount: instrBySite.size,
+    codeBitmap,
+    probableProbeOffsets: Array.from(probableProbeOffsetsSet).sort((a, b) => a - b)
   };
 }

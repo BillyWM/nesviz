@@ -2,6 +2,8 @@ import { BrowserWindow } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -41,9 +43,10 @@ export function showTraceStreamerWindow() {
     return;
   }
 
+  const { bounds, maximized } = getInitialWindowStateSync('traceStreamer', { width: 520, height: 360 });
+
   traceStreamerWindow = new BrowserWindow({
-    width: 520,
-    height: 360,
+    ...bounds,
     parent: mainWindow || undefined,
     autoHideMenuBar: true,
     webPreferences: {
@@ -51,6 +54,9 @@ export function showTraceStreamerWindow() {
       contextIsolation: true
     }
   });
+
+  applyMaximizedIfNeeded(traceStreamerWindow, maximized);
+  attachSaveOnClose(traceStreamerWindow, 'traceStreamer');
 
   // Hide menu bar on Windows/Linux. (macOS uses a global app menu.)
   try {

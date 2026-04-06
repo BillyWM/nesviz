@@ -174,8 +174,8 @@ function getOperandAddrForMenu(line) {
 export function CodeLines({
   lines,
   currentBlockId,
-  ctxId = 'nrom',
-  labelsByRomOff,
+  ctxId = 'nrom:fixed',
+  labelsBySite,
   labelsByAddr,
   onNavigateToCpuAddr,
   canNavigateCpuAddr,
@@ -193,8 +193,9 @@ export function CodeLines({
   return (
     <div className="nv-code-lines">
       {lines.map((line) => {
-        const lineLabel = (typeof line?.romOff === 'number' && labelsByRomOff && typeof labelsByRomOff === 'object')
-          ? (labelsByRomOff[String(line.romOff | 0)] || '')
+        const lineSiteKey = typeof line?.siteKey === 'string' ? line.siteKey : null;
+        const lineLabel = (lineSiteKey && labelsBySite && typeof labelsBySite === 'object')
+          ? (labelsBySite[lineSiteKey]?.label || '')
           : '';
 
         const asmText = buildAsmText(line, labelsByAddr);
@@ -203,13 +204,13 @@ export function CodeLines({
         const isDirect = flowType === 'branch' || flowType === 'jump' || flowType === 'call';
         const target = isDirect ? line.flow?.target : null;
         const resolvedTargetBlockId = typeof target === 'number' && typeof resolveBlockIdForCpuAddr === 'function'
-          ? resolveBlockIdForCpuAddr(target, ctxId)
+          ? resolveBlockIdForCpuAddr(target, line?.ctxKey || ctxId)
           : null;
 
         // Avoid intra-block navigation (loops, short forward skips, etc.) once we coalesce blocks.
         // We only link when we can resolve the target to a *different* decoded block.
         const canNav = typeof target === 'number'
-          ? (resolvedTargetBlockId ? (resolvedTargetBlockId !== currentBlockId) : (typeof canNavigateCpuAddr === 'function' && canNavigateCpuAddr(target, ctxId)))
+          ? (resolvedTargetBlockId ? (resolvedTargetBlockId !== currentBlockId) : (typeof canNavigateCpuAddr === 'function' && canNavigateCpuAddr(target, line?.ctxKey || ctxId)))
           : false;
 
         const targetLabel = (typeof target === 'number') ? getAddrLabel(labelsByAddr, target & 0xffff) : '';
@@ -217,13 +218,15 @@ export function CodeLines({
           ? (targetLabel ? `Go to ${targetLabel} ($${hex4(target)})` : `Go to $${hex4(target)}`)
           : '';
 
+        const lineRomOff = typeof line?.romOff === 'number' ? (line.romOff >>> 0) : null;
+
         return (
           <div
-            key={`${line.romOff}:${line.cpuAddr}`}
-            className={`nv-line ${hasPoi && (line.romOff >>> 0) >= poiStart && (line.romOff >>> 0) < poiEnd ? 'is-poi-marked' : ''}`}
+            key={line.siteKey || `${line.romOff}:${line.cpuAddr}`}
+            className={`nv-line ${hasPoi && lineRomOff !== null && lineRomOff >= poiStart && lineRomOff < poiEnd ? 'is-poi-marked' : ''}`}
             onMouseEnter={() => {
               if (typeof onHoverLine === 'function') {
-                onHoverLine({ romOff: line.romOff, cpuAddr: line.cpuAddr, blockId: currentBlockId });
+                onHoverLine({ siteKey: line.siteKey, ctxKey: line.ctxKey || ctxId, romOff: line.romOff, cpuAddr: line.cpuAddr, blockId: currentBlockId });
               }
             }}
             onContextMenu={(e) => {
@@ -233,6 +236,8 @@ export function CodeLines({
               const isAsm = !!e.target?.closest?.('.nv-col-asm');
               const operandAddrForMenu = isAsm ? getOperandAddrForMenu(line) : null;
               onContextMenuLine({
+                siteKey: line.siteKey,
+                ctxKey: line.ctxKey || ctxId,
                 romOff: line.romOff,
                 cpuAddr: line.cpuAddr,
                 blockId: currentBlockId,
@@ -250,7 +255,7 @@ export function CodeLines({
                 <button
                   type="button"
                   className="nv-asm-link"
-                  onClick={() => onNavigateToCpuAddr?.(target, ctxId)}
+                  onClick={() => onNavigateToCpuAddr?.(target, line?.ctxKey || ctxId)}
                   title={linkTitle}
                 >
                   {asmText}

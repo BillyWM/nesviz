@@ -2,6 +2,8 @@ import { BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -41,9 +43,10 @@ export function showLabelsWindow() {
     return;
   }
 
+  const { bounds, maximized } = getInitialWindowStateSync('labels', { width: 560, height: 720 });
+
   labelsWindow = new BrowserWindow({
-    width: 560,
-    height: 720,
+    ...bounds,
     parent: mainWindow || undefined,
     autoHideMenuBar: true,
     webPreferences: {
@@ -51,6 +54,9 @@ export function showLabelsWindow() {
       contextIsolation: true
     }
   });
+
+  applyMaximizedIfNeeded(labelsWindow, maximized);
+  attachSaveOnClose(labelsWindow, 'labels');
 
   // Hide menu bar on Windows/Linux. (macOS uses a global app menu.)
   try {

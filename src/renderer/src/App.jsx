@@ -13,6 +13,36 @@ function fmtCpu(addr) {
   return addr.toString(16).toUpperCase().padStart(4, '0');
 }
 
+function gapKeyFor(item) {
+  if (!item || typeof item !== 'object') return null;
+  if (typeof item.gapKey === 'string' && item.gapKey) return item.gapKey;
+  const type = typeof item.type === 'string' ? item.type : 'unknown';
+  const romStart = typeof item.romStart === 'number' ? item.romStart : Number(item.romStart);
+  const romEnd = typeof item.romEnd === 'number' ? item.romEnd : Number(item.romEnd);
+  if (!Number.isFinite(romStart) || !Number.isFinite(romEnd)) return null;
+  return `gap:${type}:${romStart | 0}:${romEnd | 0}`;
+}
+
+function formatHexDump(bytes) {
+  if (!Array.isArray(bytes) || bytes.length === 0) return '';
+  const lines = [];
+  for (let i = 0; i < bytes.length; i += 16) {
+    lines.push(bytes.slice(i, i + 16).map((b) => Number(b).toString(16).toUpperCase().padStart(2, '0')).join(' '));
+  }
+  return lines.join('\n');
+}
+
+function normalizeSite(site) {
+  if (!site || typeof site !== 'object') return null;
+  let siteKey = typeof site.siteKey === 'string' && site.siteKey ? site.siteKey : null;
+  const ctxKey = (typeof site.ctxKey === 'string' && site.ctxKey) ? site.ctxKey : 'nrom:fixed';
+  const cpuAddr = typeof site.cpuAddr === 'number' ? (site.cpuAddr & 0xffff) : (site.cpuAddr != null ? (Number(site.cpuAddr) & 0xffff) : null);
+  const romOff = typeof site.romOff === 'number' ? (site.romOff | 0) : (site.romOff != null && Number.isFinite(Number(site.romOff)) ? (Number(site.romOff) | 0) : null);
+  if (!siteKey && typeof cpuAddr === 'number') siteKey = `${ctxKey}:${fmtCpu(cpuAddr)}`;
+  if (!siteKey && cpuAddr == null) return null;
+  return { siteKey, ctxKey, cpuAddr, romOff };
+}
+
 export default function App() {
   const [rom, setRom] = useState(null);
   const [romHash, setRomHash] = useState(null);
@@ -30,7 +60,7 @@ export default function App() {
   const [markedPoiSpan, setMarkedPoiSpan] = useState(null);
   // Per-ROM user annotations.
   const [bookmarks, setBookmarks] = useState([]);
-  const [labelsByRomOff, setLabelsByRomOff] = useState({});
+  const [labelsBySite, setLabelsBySite] = useState({});
   const [labelsByAddr, setLabelsByAddr] = useState({});
   const [focusLocation, setFocusLocation] = useState(null);
   const [status, setStatus] = useState('');
@@ -40,6 +70,11 @@ export default function App() {
   // Hovered code row (in-memory only). We keep this in a ref to avoid rerendering on hover.
   const hoveredLineRef = useRef(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [shownGapBytesByKey, setShownGapBytesByKey] = useState({});
+  const [gapBytesByKey, setGapBytesByKey] = useState({});
+  const [gapBytesLoadingByKey, setGapBytesLoadingByKey] = useState({});
+  const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [analysisDebug, setAnalysisDebug] = useState(null);
 
   // Label editing modal (in-memory only).
   const [labelModal, setLabelModal] = useState(null);
@@ -71,14 +106,33 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!window?.nesviz?.onMenuSetShowDebugInfo) return undefined;
+    return window.nesviz.onMenuSetShowDebugInfo((checked) => {
+      setShowDebugInfo(!!checked);
+    });
+  }, []);
 
 
   const resolveBlockIdForCpuAddr = useMemo(() => {
-    // Coalesced blocks may contain many instruction starts; we navigate by CPU *range*, not only leaders.
+    // Prefer exact line/start matches when available; fall back to CPU ranges for coalesced/span-style navigation.
+    const exactByCtx = new Map();
     const byCtx = new Map();
     for (const b of blocks || []) {
-      const ctxId = (b?.instances?.[0]?.ctxId) || 'nrom';
+      const ctxId = (b?.instances?.[0]?.ctxId) || b?.ctxKey || 'nrom:fixed';
+      if (!exactByCtx.has(ctxId)) exactByCtx.set(ctxId, new Map());
+      const exact = exactByCtx.get(ctxId);
+
       const cpuStart = typeof b?.cpuStart === 'number' ? (b.cpuStart & 0xffff) : null;
+      if (cpuStart !== null && !exact.has(cpuStart)) exact.set(cpuStart, b.id);
+
+      const lines = Array.isArray(b?.lines) ? b.lines : [];
+      for (const line of lines) {
+        const lineCpu = typeof line?.cpuAddr === 'number' ? (line.cpuAddr & 0xffff) : null;
+        if (lineCpu === null) continue;
+        if (!exact.has(lineCpu)) exact.set(lineCpu, b.id);
+      }
+
       const cpuEnd = typeof b?.cpuEnd === 'number' ? (b.cpuEnd & 0xffff) : null;
       if (cpuStart === null || cpuEnd === null) continue;
       if (!byCtx.has(ctxId)) byCtx.set(ctxId, []);
@@ -109,15 +163,18 @@ export default function App() {
       return null;
     }
 
-    return (cpuAddr, ctxId = 'nrom') => {
+    return (cpuAddr, ctxId = 'nrom:fixed') => {
       if (typeof cpuAddr !== 'number') return null;
+      const addr = cpuAddr & 0xffff;
+      const exact = exactByCtx.get(ctxId);
+      if (exact && exact.has(addr)) return exact.get(addr);
       const arr = byCtx.get(ctxId) || [];
-      return findInCtx(arr, cpuAddr & 0xffff);
+      return findInCtx(arr, addr);
     };
   }, [blocks]);
 
   const canNavigateCpuAddr = useMemo(() => {
-    return (cpuAddr, ctxId = 'nrom') => !!resolveBlockIdForCpuAddr(cpuAddr, ctxId);
+    return (cpuAddr, ctxId = 'nrom:fixed') => !!resolveBlockIdForCpuAddr(cpuAddr, ctxId);
   }, [resolveBlockIdForCpuAddr]);
 
   const resolveBlockIdForRomOff = useMemo(() => {
@@ -157,23 +214,23 @@ export default function App() {
     };
   }, [blocks]);
 
-  const bookmarkRomOffSet = useMemo(() => {
+  const bookmarkSiteKeySet = useMemo(() => {
     const s = new Set();
     for (const b of bookmarks || []) {
-      const ro = typeof b?.romOff === 'number' ? b.romOff : null;
-      if (ro !== null) s.add(ro | 0);
+      const key = typeof b?.siteKey === 'string' ? b.siteKey : null;
+      if (key) s.add(key);
     }
     return s;
   }, [bookmarks]);
 
-  function isBookmarked(romOff) {
-    if (typeof romOff !== 'number') return false;
-    return bookmarkRomOffSet.has(romOff | 0);
+  function isBookmarked(siteKey) {
+    if (typeof siteKey !== 'string' || !siteKey) return false;
+    return bookmarkSiteKeySet.has(siteKey);
   }
 
-  function getLabelForRomOff(romOff) {
-    if (typeof romOff !== 'number') return '';
-    const v = labelsByRomOff?.[String(romOff | 0)];
+  function getLabelForSite(siteKey) {
+    if (typeof siteKey !== 'string' || !siteKey) return '';
+    const v = labelsBySite?.[siteKey]?.label;
     return typeof v === 'string' ? v : '';
   }
 
@@ -183,26 +240,32 @@ export default function App() {
     return typeof v === 'string' ? v : '';
   }
 
-  const setBookmarkAt = useCallback(async (romOff, cpuAddr, set) => {
+  const setBookmarkAt = useCallback(async (site, set) => {
     if (!romHash) return;
     if (!window?.nesviz?.setBookmark) return;
-    const res = await window.nesviz.setBookmark(romOff, cpuAddr, !!set);
+    const n = normalizeSite(site);
+    if (!n) return;
+    const res = await window.nesviz.setBookmark(n, !!set);
     if (res?.ok) {
       setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
     }
   }, [romHash]);
 
-  const toggleBookmarkAt = useCallback(async (romOff, cpuAddr) => {
-    const exists = bookmarkRomOffSet.has(romOff | 0);
-    await setBookmarkAt(romOff, cpuAddr, !exists);
-  }, [bookmarkRomOffSet, setBookmarkAt]);
+  const toggleBookmarkAt = useCallback(async (site) => {
+    const n = normalizeSite(site);
+    if (!n?.siteKey) return;
+    const exists = bookmarkSiteKeySet.has(n.siteKey);
+    await setBookmarkAt(n, !exists);
+  }, [bookmarkSiteKeySet, setBookmarkAt]);
 
-  const setLabelAt = useCallback(async (romOff, label) => {
+  const setLabelAt = useCallback(async (site, label) => {
     if (!romHash) return;
     if (!window?.nesviz?.setLabel) return;
-    const res = await window.nesviz.setLabel(romOff, label);
+    const n = normalizeSite(site);
+    if (!n) return;
+    const res = await window.nesviz.setLabel(n, label);
     if (res?.ok) {
-      setLabelsByRomOff(res.labels && typeof res.labels === 'object' ? res.labels : {});
+      setLabelsBySite(res.labels && typeof res.labels === 'object' ? res.labels : {});
     }
   }, [romHash]);
 
@@ -215,7 +278,7 @@ export default function App() {
     }
   }, [romHash]);
 
-  function navigateToCpuAddr(cpuAddr, ctxId = 'nrom') {
+  function navigateToCpuAddr(cpuAddr, ctxId = 'nrom:fixed') {
     if (typeof cpuAddr !== 'number') return;
     const blockId = resolveBlockIdForCpuAddr(cpuAddr, ctxId);
     if (!blockId) {
@@ -233,6 +296,8 @@ export default function App() {
 
   function updateHoveredLine(lineInfo) {
     if (!lineInfo) return;
+    const siteKey = typeof lineInfo.siteKey === 'string' ? lineInfo.siteKey : null;
+    const ctxKey = (typeof lineInfo.ctxKey === 'string' && lineInfo.ctxKey) ? lineInfo.ctxKey : 'nrom:fixed';
     const romOff = typeof lineInfo.romOff === 'number' ? lineInfo.romOff : Number(lineInfo.romOff);
     const cpuAddr = typeof lineInfo.cpuAddr === 'number' ? lineInfo.cpuAddr : (lineInfo.cpuAddr != null ? Number(lineInfo.cpuAddr) : null);
     const labelTarget = (lineInfo.labelTarget === 'operand') ? 'operand' : 'line';
@@ -240,25 +305,23 @@ export default function App() {
       ? lineInfo.operandAddr
       : (lineInfo.operandAddr != null ? Number(lineInfo.operandAddr) : null);
     const operandAddr = Number.isFinite(operandAddrRaw) ? (operandAddrRaw & 0xffff) : null;
-    if (!Number.isFinite(romOff) || romOff < 0) return;
+    if (!siteKey && (!Number.isFinite(cpuAddr) || cpuAddr < 0)) return;
     hoveredLineRef.current = {
-      romOff: romOff | 0,
+      siteKey,
+      ctxKey,
+      romOff: Number.isFinite(romOff) && romOff >= 0 ? (romOff | 0) : null,
       cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null,
       labelTarget,
       operandAddr
     };
   }
 
-  function openLabelModalForRomOff(romOff, cpuAddr = null) {
-    const r = typeof romOff === 'number' ? (romOff | 0) : Number(romOff);
-    if (!Number.isFinite(r) || r < 0) return;
-    const existing = getLabelForRomOff(r | 0);
+  function openLabelModalForSite(site) {
+    const n = normalizeSite(site);
+    if (!n) return;
+    const existing = getLabelForSite(n.siteKey);
     setLabelText(existing || '');
-
-    const aRaw = (typeof cpuAddr === 'number') ? cpuAddr : (cpuAddr != null ? Number(cpuAddr) : null);
-    const a = Number.isFinite(aRaw) ? (aRaw & 0xffff) : null;
-
-    setLabelModal({ kind: 'romOff', romOff: r | 0, cpuAddr: a });
+    setLabelModal({ kind: 'site', site: n });
   }
 
   function openLabelModalForAddr(cpuAddr) {
@@ -287,9 +350,10 @@ export default function App() {
 
   function openBlockContextMenu(blockInfo, clientX, clientY) {
     if (!blockInfo) return;
+    const siteKey = typeof blockInfo.siteKey === 'string' ? blockInfo.siteKey : null;
     const romOff = typeof blockInfo.romOff === 'number' ? blockInfo.romOff : Number(blockInfo.romOff);
     const cpuAddr = typeof blockInfo.cpuAddr === 'number' ? blockInfo.cpuAddr : (blockInfo.cpuAddr != null ? Number(blockInfo.cpuAddr) : null);
-    if (!Number.isFinite(romOff) || romOff < 0) return;
+    if (!siteKey && (!Number.isFinite(cpuAddr) || cpuAddr < 0)) return;
 
     const w = window.innerWidth || 0;
     const h = window.innerHeight || 0;
@@ -297,16 +361,62 @@ export default function App() {
     const menuH = 48;
     const x = Math.max(8, Math.min(clientX ?? 0, Math.max(8, w - menuW - 8)));
     const y = Math.max(8, Math.min(clientY ?? 0, Math.max(8, h - menuH - 8)));
-    setContextMenu({ kind: 'block', x, y, romOff: romOff | 0, cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null, blockId: blockInfo.blockId || null });
+    setContextMenu({ kind: 'block', x, y, siteKey: blockInfo.siteKey || null, ctxKey: blockInfo.ctxKey || 'nrom:fixed', romOff: Number.isFinite(romOff) ? (romOff | 0) : null, cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null, blockId: blockInfo.blockId || null });
   }
 
-  function navigateToRomOffWithHistory(romOff) {
-    const blockId = resolveBlockIdForRomOff(romOff);
+  function openGapContextMenu(gapInfo, clientX, clientY) {
+    if (!gapInfo || gapInfo.type !== 'unknown') return;
+    const gapKey = gapKeyFor(gapInfo);
+    if (!gapKey) return;
+
+    const w = window.innerWidth || 0;
+    const h = window.innerHeight || 0;
+    const menuW = 210;
+    const menuH = 48;
+    const x = Math.max(8, Math.min(clientX ?? 0, Math.max(8, w - menuW - 8)));
+    const y = Math.max(8, Math.min(clientY ?? 0, Math.max(8, h - menuH - 8)));
+    setContextMenu({ kind: 'gap', x, y, gapKey, type: gapInfo.type, romStart: gapInfo.romStart | 0, romEnd: gapInfo.romEnd | 0 });
+  }
+
+  async function toggleGapBytes(gapInfo) {
+    const gapKey = gapKeyFor(gapInfo);
+    if (!gapKey) return;
+
+    if (shownGapBytesByKey[gapKey]) {
+      setShownGapBytesByKey((p) => ({ ...p, [gapKey]: false }));
+      return;
+    }
+
+    setShownGapBytesByKey((p) => ({ ...p, [gapKey]: true }));
+    if (typeof gapBytesByKey[gapKey] === 'string' || gapBytesLoadingByKey[gapKey]) return;
+
+    setGapBytesLoadingByKey((p) => ({ ...p, [gapKey]: true }));
+    try {
+      const res = await window.nesviz.getPrgBytes(gapInfo.romStart, gapInfo.romEnd);
+      if (res?.ok) {
+        setGapBytesByKey((p) => ({ ...p, [gapKey]: formatHexDump(Array.isArray(res.bytes) ? res.bytes : []) }));
+      }
+    } finally {
+      setGapBytesLoadingByKey((p) => {
+        const n = { ...p };
+        delete n[gapKey];
+        return n;
+      });
+    }
+  }
+
+  function navigateToSiteWithHistory(site) {
+    const n = normalizeSite(site);
+    if (!n || typeof n.cpuAddr !== 'number') {
+      setStatus('Run static analysis first to navigate to bookmarks.');
+      return;
+    }
+    const blockId = resolveBlockIdForCpuAddr(n.cpuAddr, n.ctxKey);
     if (!blockId) {
       setStatus('Run static analysis first to navigate to bookmarks.');
       return;
     }
-    navigateToBlockIdWithHistory(blockId, romOff);
+    navigateToBlockIdWithHistory(blockId, n.romOff);
   }
 
   function getTopVisibleBlockId() {
@@ -325,7 +435,7 @@ export default function App() {
     stack.push(fromId);
   }
 
-  function navigateToCpuAddrWithHistory(cpuAddr, ctxId = 'nrom') {
+  function navigateToCpuAddrWithHistory(cpuAddr, ctxId = 'nrom:fixed') {
     if (!suppressHistoryPushRef.current) pushCurrentLocationForLinkClick();
     navigateToCpuAddr(cpuAddr, ctxId);
   }
@@ -345,19 +455,15 @@ export default function App() {
     const unsub = window.nesviz.onLabelsNavigate((msg) => {
       if (!msg || typeof msg !== 'object') return;
 
-      if (msg.kind === 'romOff') {
-        const r = typeof msg.romOff === 'number' ? msg.romOff : Number(msg.romOff);
-        if (!Number.isFinite(r) || r < 0) return;
-        const blockId = resolveBlockIdForRomOff(r | 0);
-        if (!blockId) return;
-        navigateToBlockIdWithHistory(blockId, r | 0);
+      if (msg.kind === 'site') {
+        navigateToSiteWithHistory(msg);
         return;
       }
 
       if (msg.kind === 'addr') {
         const aRaw = (typeof msg.cpuAddr === 'number') ? msg.cpuAddr : Number(msg.cpuAddr);
         if (!Number.isFinite(aRaw) || aRaw < 0) return;
-        const ctxId = (typeof msg.ctxId === 'string' && msg.ctxId) ? msg.ctxId : 'nrom';
+        const ctxId = (typeof msg.ctxId === 'string' && msg.ctxId) ? msg.ctxId : 'nrom:fixed';
         const a = (aRaw & 0xffff);
         if (!canNavigateCpuAddr(a, ctxId)) return;
         navigateToCpuAddrWithHistory(a, ctxId);
@@ -366,7 +472,7 @@ export default function App() {
     return () => {
       if (typeof unsub === 'function') unsub();
     };
-  }, [canNavigateCpuAddr, navigateToBlockIdWithHistory, navigateToCpuAddrWithHistory, resolveBlockIdForRomOff]);
+  }, [canNavigateCpuAddr, navigateToBlockIdWithHistory, navigateToCpuAddrWithHistory]);
 
 
   function isEditableElement(el) {
@@ -388,10 +494,10 @@ export default function App() {
       // Ctrl+B toggles a bookmark on the currently hovered row (contextual add/remove).
       if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
         const line = hoveredLineRef.current;
-        if (!line || typeof line.romOff !== 'number') return;
+        if (!line || typeof line.siteKey !== 'string') return;
         e.preventDefault();
         e.stopPropagation();
-        toggleBookmarkAt(line.romOff, line.cpuAddr);
+        toggleBookmarkAt(line);
         return;
       }
 
@@ -437,6 +543,27 @@ export default function App() {
   }, [blockAliases, contextMenu, labelModal, toggleBookmarkAt]);
 
   useEffect(() => {
+    if (!window?.nesviz?.getStartupRomPath) return;
+
+    let canceled = false;
+
+    (async () => {
+      try {
+        const res = await window.nesviz.getStartupRomPath();
+        if (canceled || !res?.ok || !res?.filepath) return;
+        await openRomPath(res.filepath);
+      } catch {
+        // Keep startup quiet if the remembered ROM cannot be restored.
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (!window?.nesviz?.onMenuOpenRom) return;
     const unsubOpen = window.nesviz.onMenuOpenRom(() => {
       openRom();
@@ -474,11 +601,15 @@ export default function App() {
       setRomHash(res.romHash || null);
       setVectors(res.vectors);
       setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
-      setLabelsByRomOff((res.labels && typeof res.labels === 'object') ? res.labels : {});
+      setLabelsBySite((res.labels && typeof res.labels === 'object') ? res.labels : {});
       setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
       setContextMenu(null);
       setLabelModal(null);
       hoveredLineRef.current = null;
+      setShownGapBytesByKey({});
+      setGapBytesByKey({});
+      setGapBytesLoadingByKey({});
+    setAnalysisDebug(null);
 
       // New ROM => clear navigation history note: in-memory only.
       navStackRef.current = [];
@@ -514,11 +645,15 @@ export default function App() {
       setRomHash(res.romHash || null);
       setVectors(res.vectors);
       setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
-      setLabelsByRomOff((res.labels && typeof res.labels === 'object') ? res.labels : {});
+      setLabelsBySite((res.labels && typeof res.labels === 'object') ? res.labels : {});
       setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
       setContextMenu(null);
       setLabelModal(null);
       hoveredLineRef.current = null;
+      setShownGapBytesByKey({});
+      setGapBytesByKey({});
+      setGapBytesLoadingByKey({});
+    setAnalysisDebug(null);
 
       // New ROM => clear navigation history.
       navStackRef.current = [];
@@ -549,9 +684,10 @@ export default function App() {
       const a = cm.operandAddr & 0xffff;
       return { kind: 'addr', key: a, existing: getLabelForAddr(a) };
     }
-    if (typeof cm.romOff !== 'number') return null;
-    const r = cm.romOff | 0;
-    return { kind: 'romOff', key: r, existing: getLabelForRomOff(r) };
+    if (typeof cm.siteKey === 'string' && cm.siteKey) {
+      return { kind: 'site', site: normalizeSite(cm), existing: getLabelForSite(cm.siteKey) };
+    }
+    return null;
   }
 
   async function saveLabelModal() {
@@ -562,13 +698,13 @@ export default function App() {
       return;
     }
 
-    const romOff = labelModal.romOff;
-    const cpuAddr = (typeof labelModal.cpuAddr === 'number') ? (labelModal.cpuAddr & 0xffff) : null;
+    const site = normalizeSite(labelModal.site);
+    const cpuAddr = (typeof site?.cpuAddr === 'number') ? (site.cpuAddr & 0xffff) : null;
 
-    const prevLineLabel = getLabelForRomOff(romOff);
+    const prevLineLabel = site?.siteKey ? getLabelForSite(site.siteKey) : '';
     const prevAddrLabel = (cpuAddr != null) ? getLabelForAddr(cpuAddr) : '';
 
-    await setLabelAt(romOff, labelText);
+    await setLabelAt(site, labelText);
 
     // If this ROM-offset label is (also) acting as the address label for the line's CPU address,
     // keep them in sync. But don't overwrite an explicitly-set address label.
@@ -600,6 +736,10 @@ export default function App() {
     setIsAnalyzing(true);
     setVsaProgress({ runId: null, totalBlocks: null, maxRatio: 0 });
     setStatus('Analyzing…');
+    setShownGapBytesByKey({});
+    setGapBytesByKey({});
+    setGapBytesLoadingByKey({});
+    setAnalysisDebug(null);
     try {
       const runRes = await window.nesviz.runStaticNrom();
       if (!runRes.ok) {
@@ -648,6 +788,7 @@ export default function App() {
         setBlockAliases(tlRes.blockAliases || {});
         setMapper(tlRes.mapper);
         setStats(tlRes.stats);
+        setAnalysisDebug(tlRes.debug || null);
       }
 
       if (artRes.ok) {
@@ -710,11 +851,17 @@ export default function App() {
             onNavigateToCpuAddr={navigateToCpuAddrWithHistory}
             canNavigateCpuAddr={canNavigateCpuAddr}
             resolveBlockIdForCpuAddr={resolveBlockIdForCpuAddr}
-            labelsByRomOff={labelsByRomOff}
+            labelsBySite={labelsBySite}
             labelsByAddr={labelsByAddr}
             onHoverLine={updateHoveredLine}
             onContextMenuLine={(lineInfo, x, y) => openLineContextMenu(lineInfo, x, y)}
             onContextMenuBlock={(blockInfo, x, y) => openBlockContextMenu(blockInfo, x, y)}
+            onContextMenuGap={(gapInfo, x, y) => openGapContextMenu(gapInfo, x, y)}
+            shownGapBytesByKey={shownGapBytesByKey}
+            gapBytesByKey={gapBytesByKey}
+            gapBytesLoadingByKey={gapBytesLoadingByKey}
+            analysisDebug={analysisDebug}
+            showDebugInfo={showDebugInfo}
             apiRef={stackApiRef}
           />
         </section>
@@ -729,12 +876,12 @@ export default function App() {
             unresolvedSites={unresolvedSites}
             pointsOfInterest={pointsOfInterest}
             bookmarks={bookmarks}
-            labelsByRomOff={labelsByRomOff}
+            labelsBySite={labelsBySite}
             onNavigateToBlock={navigateToBlockIdWithHistory}
-            onNavigateToRomOff={navigateToRomOffWithHistory}
+            onNavigateToSite={navigateToSiteWithHistory}
             onContextMenuBookmark={(b, x, y) => {
               if (!b) return;
-              openLineContextMenu({ romOff: b.romOff, cpuAddr: b.cpuAddr }, x, y);
+              openLineContextMenu(b, x, y);
             }}
           />
         </aside>
@@ -792,11 +939,24 @@ export default function App() {
                 type="button"
                 className="nv-contextmenu-item"
                 onClick={() => {
-                  toggleBookmarkAt(contextMenu.romOff, contextMenu.cpuAddr);
+                  toggleBookmarkAt(contextMenu);
                   setContextMenu(null);
                 }}
               >
-                {isBookmarked(contextMenu.romOff) ? 'Remove bookmark' : 'Add bookmark'}
+                {isBookmarked(contextMenu.siteKey) ? 'Remove bookmark' : 'Add bookmark'}
+              </button>
+            ) : null}
+
+            {contextMenu.kind === 'gap' ? (
+              <button
+                type="button"
+                className="nv-contextmenu-item"
+                onClick={() => {
+                  toggleGapBytes(contextMenu);
+                  setContextMenu(null);
+                }}
+              >
+                {shownGapBytesByKey[contextMenu.gapKey] ? 'Hide bytes' : 'Show bytes'}
               </button>
             ) : null}
 
@@ -809,7 +969,7 @@ export default function App() {
                   className="nv-contextmenu-item"
                   onClick={() => {
                     if (lt.kind === 'addr') openLabelModalForAddr(lt.key);
-                    else openLabelModalForRomOff(lt.key, contextMenu?.cpuAddr);
+                    else openLabelModalForSite(lt.site);
                     setContextMenu(null);
                   }}
                 >

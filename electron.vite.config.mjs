@@ -28,7 +28,9 @@ export default defineConfig({
           main: resolve('src/renderer/index.html'),
           romlist: resolve('src/renderer/romlist.html'),
           labels: resolve('src/renderer/labels.html'),
-          tracestreamer: resolve('src/renderer/tracestreamer.html')
+          tracestreamer: resolve('src/renderer/tracestreamer.html'),
+          analysislog: resolve('src/renderer/analysislog.html'),
+          tuning: resolve('src/renderer/tuning.html')
         }
       }
     }

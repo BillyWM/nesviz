@@ -22,7 +22,7 @@ export function BlockCard({
   onNavigateToCpuAddr,
   canNavigateCpuAddr,
   resolveBlockIdForCpuAddr,
-  labelsByRomOff,
+  labelsBySite,
   labelsByAddr,
   onToggleExpanded,
   onHoverLine,
@@ -30,14 +30,17 @@ export function BlockCard({
   onContextMenuBlock
 }) {
   const inst = blockIndex?.instances?.[0];
-  const ctxId = inst?.ctxId || 'nrom';
+  const ctxId = inst?.ctxId || 'nrom:fixed';
   const cpuStart = inst?.cpuStart;
   const romStart = blockIndex?.romStart ?? item.romStart;
   const romEnd = blockIndex?.romEnd ?? item.romEnd;
   const confidence = blockIndex?.confidence || 'certain';
   const pills = Array.isArray(blockIndex?.pills) ? blockIndex.pills : [];
-  const label = (typeof romStart === 'number' && labelsByRomOff && typeof labelsByRomOff === 'object')
-    ? (labelsByRomOff[String(romStart | 0)] || '')
+  const firstLine = blockFull?.lines?.[0] || blockIndex?.previewLines?.[0] || null;
+  const firstSiteKey = typeof firstLine?.siteKey === 'string' ? firstLine.siteKey : null;
+  const firstCtxKey = typeof firstLine?.ctxKey === 'string' ? firstLine.ctxKey : ctxId;
+  const label = (firstSiteKey && labelsBySite && typeof labelsBySite === 'object')
+    ? (labelsBySite[firstSiteKey]?.label || '')
     : '';
 
   const lines = useMemo(() => {
@@ -96,7 +99,7 @@ export function BlockCard({
           if (!onContextMenuBlock) return;
           e.preventDefault();
           e.stopPropagation();
-          onContextMenuBlock({ blockId: item.blockId, romOff: romStart, cpuAddr: cpuStart }, e.clientX, e.clientY);
+          onContextMenuBlock({ blockId: item.blockId, siteKey: firstSiteKey, ctxKey: firstCtxKey, romOff: firstLine?.romOff ?? romStart, cpuAddr: firstLine?.cpuAddr ?? cpuStart }, e.clientX, e.clientY);
         }}
         aria-label={isExpanded ? 'Collapse block' : 'Expand block'}
         title={isExpanded ? 'Collapse' : 'Expand'}
@@ -137,8 +140,9 @@ export function BlockCard({
             <div className="nv-inbound-addrs">
               {inboundSources.slice(0, inboundShowN).map((src, idx) => {
                 const fromCpu = src?.fromCpuAddr;
-                const key = String(src?.fromRomOff ?? fromCpu ?? idx);
-                const isLink = typeof fromCpu === 'number' && canNavigateCpuAddr(fromCpu, ctxId);
+                const fromCtxKey = typeof src?.fromCtxKey === 'string' ? src.fromCtxKey : ctxId;
+                const key = String(src?.fromSiteKey ?? src?.fromRomOff ?? fromCpu ?? idx);
+                const isLink = typeof fromCpu === 'number' && canNavigateCpuAddr(fromCpu, fromCtxKey);
                 return (
                   <button
                     key={key}
@@ -146,7 +150,7 @@ export function BlockCard({
                     className={`nv-inbound-addr ${isLink ? 'nv-link' : ''}`}
                     onClick={() => {
                       if (!isLink) return;
-                      onNavigateToCpuAddr(fromCpu, ctxId);
+                      onNavigateToCpuAddr(fromCpu, fromCtxKey);
                     }}
                     disabled={!isLink}
                     title={typeof fromCpu === 'number' ? `Go to ${cpuText(fromCpu)}` : 'Unknown CPU address'}
@@ -185,7 +189,7 @@ export function BlockCard({
             lines={lines}
             currentBlockId={item.blockId}
             ctxId={ctxId}
-            labelsByRomOff={labelsByRomOff}
+            labelsBySite={labelsBySite}
             labelsByAddr={labelsByAddr}
             onNavigateToCpuAddr={onNavigateToCpuAddr}
             canNavigateCpuAddr={canNavigateCpuAddr}

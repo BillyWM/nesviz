@@ -51,6 +51,7 @@ export function buildViewATimelineFromBlocks(blocksIndex) {
       const len = b.romStart - off;
       items.push({
         type: 'unknown',
+        gapKey: `gap:unknown:${off}:${b.romStart}`,
         romStart: off,
         romEnd: b.romStart,
         byteLen: len,
