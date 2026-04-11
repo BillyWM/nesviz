@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { UNKNOWN_FETCH_CTX_KEY } from '../../shared/analyze/fetchContext.js';
 
 function fmtHex4(v) {
   if (typeof v !== 'number') return '????';
@@ -59,7 +60,7 @@ export default function LabelsWindow() {
       if (!siteKey || !label) continue;
       const cpuAddr = typeof entry?.cpuAddr === 'number' ? (entry.cpuAddr & 0xffff) : null;
       const romOff = typeof entry?.romOff === 'number' ? (entry.romOff | 0) : null;
-      const ctxKey = typeof entry?.ctxKey === 'string' && entry.ctxKey ? entry.ctxKey : 'nrom:fixed';
+      const ctxKey = typeof entry?.ctxKey === 'string' && entry.ctxKey ? entry.ctxKey : UNKNOWN_FETCH_CTX_KEY;
       out.push({ kind: 'site', siteKey, ctxKey, cpuAddr, romOff, label });
     }
     out.sort((a, b) => {

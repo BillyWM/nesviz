@@ -36,8 +36,17 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
   const decodedJumpTables = jumpTables.filter((jt) => jt.status === 'decoded');
   const candidateJumpTables = jumpTables.filter((jt) => jt.status !== 'decoded');
   const resolvedPcs = new Set(decodedJumpTables.map((jt) => jt.sitePc));
-  const coverageText = Number.isFinite(stats?.coveragePct)
-    ? `${stats.coveragePct.toFixed(2)}%`
+  const codePctText = Number.isFinite(stats?.codePct)
+    ? `${stats.codePct.toFixed(2)}%`
+    : '0.00%';
+  const dataPctText = Number.isFinite(stats?.dataPct)
+    ? `${stats.dataPct.toFixed(2)}%`
+    : '0.00%';
+  const unknownPctText = Number.isFinite(stats?.unknownPct)
+    ? `${stats.unknownPct.toFixed(2)}%`
+    : '100.00%';
+  const totalPctText = Number.isFinite(stats?.totalPct)
+    ? `${stats.totalPct.toFixed(2)}%`
     : '0.00%';
 
   return (
@@ -93,8 +102,20 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
           <span className="nv-art-v">{stats?.instructionCount ?? 0}</span>
         </div>
         <div className="nv-art-kv">
-          <span className="nv-art-k">Coverage</span>
-          <span className="nv-art-v">{coverageText}</span>
+          <span className="nv-art-k">Code</span>
+          <span className="nv-art-v">{codePctText}</span>
+        </div>
+        <div className="nv-art-kv">
+          <span className="nv-art-k">Data</span>
+          <span className="nv-art-v">{dataPctText}</span>
+        </div>
+        <div className="nv-art-kv">
+          <span className="nv-art-k">Unknown</span>
+          <span className="nv-art-v">{unknownPctText}</span>
+        </div>
+        <div className="nv-art-kv">
+          <span className="nv-art-k">Total</span>
+          <span className="nv-art-v">{totalPctText}</span>
         </div>
           </div>
         )}

@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { siteKeyFor } from '../shared/analyze/fetchContext.js';
+import { UNKNOWN_FETCH_CTX_KEY, siteKeyFor } from '../shared/analyze/fetchContext.js';
 
 const USER_DATA_VERSION = 2;
 const USER_DATA_FILE = 'nesvizUserData.json';
@@ -33,9 +33,9 @@ function normalizeCpuAddr(addr) {
 }
 
 function normalizeCtxKey(ctxKey) {
-  if (ctxKey == null) return 'nrom:fixed';
+  if (ctxKey == null) return UNKNOWN_FETCH_CTX_KEY;
   const s = String(ctxKey).trim();
-  return s || 'nrom:fixed';
+  return s || UNKNOWN_FETCH_CTX_KEY;
 }
 
 function normalizeSiteRef(site) {

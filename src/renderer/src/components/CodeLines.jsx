@@ -1,4 +1,5 @@
 import { hex4, hex6 } from '../util/hex.js';
+import { UNKNOWN_FETCH_CTX_KEY } from '../../../shared/analyze/fetchContext.js';
 
 function hex2(n) {
   return (n & 0xff).toString(16).toUpperCase().padStart(2, '0');
@@ -174,7 +175,7 @@ function getOperandAddrForMenu(line) {
 export function CodeLines({
   lines,
   currentBlockId,
-  ctxId = 'nrom:fixed',
+  ctxId = UNKNOWN_FETCH_CTX_KEY,
   labelsBySite,
   labelsByAddr,
   onNavigateToCpuAddr,

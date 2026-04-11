@@ -6,7 +6,7 @@
   "author": "William Wenge-Murphy",
   "homepage": "https://billy.wenge-murphy.com/nesviz",
   "scripts": {
-	"zipit": "node zipit.js",
+    "zipit": "node zipit.js",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -24,6 +24,7 @@
     "@electron-toolkit/eslint-config": "^2.1.0",
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@tanstack/react-virtual": "^3.13.18",
+    "@xyflow/react": "^12.10.2",
     "@vitejs/plugin-react": "^5.1.1",
     "archiver": "^7.0.1",
     "electron": "^39.2.6",
@@ -37,6 +38,7 @@
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "sass": "^1.97.3",
-    "vite": "^7.2.6"
+    "vite": "^7.2.6",
+    "elkjs": "^0.11.0"
   }
 }

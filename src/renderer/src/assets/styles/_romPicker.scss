@@ -170,6 +170,15 @@
   border-color: $border;
 }
 
+
+.nv-modal-row-unsupported {
+  opacity: 0.62;
+}
+
+.nv-modal-row-unsupported:hover {
+  opacity: 0.74;
+}
+
 .nv-modal-row:active {
   background: $muted-bg-2;
 }

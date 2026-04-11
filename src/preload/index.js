@@ -11,13 +11,15 @@ contextBridge.exposeInMainWorld('nesviz', {
   }),
   getRomFolderCache: () => ipcRenderer.invoke('nesviz:getRomFolderCache'),
   openCdl: () => ipcRenderer.invoke('nesviz:openCdl'),
-  runStaticNrom: () => ipcRenderer.invoke('nesviz:runStaticNrom'),
+  runStaticAnalysis: () => ipcRenderer.invoke('nesviz:runStaticAnalysis'),
   getTimeline: () => ipcRenderer.invoke('nesviz:getTimeline'),
   getBlock: (blockId) => ipcRenderer.invoke('nesviz:getBlock', { blockId }),
   getBlocks: (blockIds) => ipcRenderer.invoke('nesviz:getBlocks', { blockIds }),
   getArtifacts: () => ipcRenderer.invoke('nesviz:getArtifacts'),
   getPrgBytes: (romStart, romEnd) => ipcRenderer.invoke('nesviz:getPrgBytes', { romStart, romEnd }),
   getAnalysisLog: () => ipcRenderer.invoke('nesviz:getAnalysisLog'),
+  getMemoryMapData: () => ipcRenderer.invoke('nesviz:getMemoryMapData'),
+  getGraphData: () => ipcRenderer.invoke('nesviz:getGraphData'),
 
   getTuningState: () => ipcRenderer.invoke('nesviz:getTuningState'),
   setTuningState: (patch) => ipcRenderer.invoke('nesviz:setTuningState', { patch }),
@@ -100,6 +102,18 @@ contextBridge.exposeInMainWorld('nesviz', {
     const listener = (_evt, payload) => callback(payload);
     ipcRenderer.on('nesviz:analysisLogUpdated', listener);
     return () => ipcRenderer.removeListener('nesviz:analysisLogUpdated', listener);
+  },
+
+  onMemoryMapDataChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('nesviz:memoryMapDataChanged', listener);
+    return () => ipcRenderer.removeListener('nesviz:memoryMapDataChanged', listener);
+  },
+
+  onGraphDataChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('nesviz:graphDataChanged', listener);
+    return () => ipcRenderer.removeListener('nesviz:graphDataChanged', listener);
   },
 
   // Main process -> main window: navigation requests from the Labels window.

@@ -1,13 +1,16 @@
 import { hexN } from '../cpu6502/fmt.js';
 import { bankStateKey, normalizeBankState, unknownBankState } from './map/bankState.js';
 
-export function makeFetchCtx({ kind = 'prg_fetch', mapperFamily = 'NROM', state = null, key = null } = {}) {
+export const UNKNOWN_FETCH_CTX_KEY = 'unknown:fixed';
+export const UNKNOWN_FETCH_CTX_FAMILY = 'UNKNOWN';
+
+export function makeFetchCtx({ kind = 'prg_fetch', mapperFamily = UNKNOWN_FETCH_CTX_FAMILY, state = null, key = null } = {}) {
   const ctx = { kind, mapperFamily, state };
   ctx.key = key || canonicalFetchCtxKey(ctx);
   return ctx;
 }
 
-export function makeFixedFetchCtx({ mapperFamily = 'NROM', key = null, state = null } = {}) {
+export function makeFixedFetchCtx({ mapperFamily = UNKNOWN_FETCH_CTX_FAMILY, key = null, state = null } = {}) {
   return makeFetchCtx({ kind: 'prg_fetch', mapperFamily, state, key });
 }
 
@@ -20,16 +23,16 @@ export function makeSlotFetchCtx({ mapperFamily = 'GENERIC', prgSlots = {} } = {
 }
 
 export function canonicalizeFetchCtx(ctx) {
-  if (!ctx || typeof ctx !== 'object') return makeFixedFetchCtx();
+  if (!ctx || typeof ctx !== 'object') return makeFixedFetchCtx({ mapperFamily: UNKNOWN_FETCH_CTX_FAMILY, key: UNKNOWN_FETCH_CTX_KEY, state: null });
   if (ctx.state?.prgSlots && typeof ctx.state.prgSlots === 'object') {
     return makeSlotFetchCtx({ mapperFamily: ctx.mapperFamily || 'GENERIC', prgSlots: ctx.state.prgSlots });
   }
-  return makeFixedFetchCtx({ mapperFamily: ctx.mapperFamily || 'NROM', key: ctx.key || null, state: ctx.state ?? null });
+  return makeFixedFetchCtx({ mapperFamily: ctx.mapperFamily || UNKNOWN_FETCH_CTX_FAMILY, key: ctx.key || null, state: ctx.state ?? null });
 }
 
 function canonicalFetchCtxKey(ctx) {
-  if (!ctx || typeof ctx !== 'object') return 'nrom:fixed';
-  const fam = String(ctx.mapperFamily || 'NROM').toLowerCase();
+  if (!ctx || typeof ctx !== 'object') return UNKNOWN_FETCH_CTX_KEY;
+  const fam = String(ctx.mapperFamily || UNKNOWN_FETCH_CTX_FAMILY).toLowerCase();
   const slots = ctx.state?.prgSlots;
   if (!slots || typeof slots !== 'object' || !Object.keys(slots).length) return `${fam}:fixed`;
   const parts = Object.keys(slots).sort().map((slotId) => `${slotId}=${bankStateKey(normalizeBankState(slots[slotId]))}`);
@@ -37,7 +40,7 @@ function canonicalFetchCtxKey(ctx) {
 }
 
 export function fetchCtxKey(ctx) {
-  if (!ctx || typeof ctx !== 'object') return 'nrom:fixed';
+  if (!ctx || typeof ctx !== 'object') return UNKNOWN_FETCH_CTX_KEY;
   if (typeof ctx.key === 'string' && ctx.key) return ctx.key;
   return canonicalFetchCtxKey(ctx);
 }
@@ -78,7 +81,7 @@ export function unknownBacking() {
 }
 
 export function siteKeyFor(ctxKey, cpuAddr) {
-  const ctx = (typeof ctxKey === 'string' && ctxKey) ? ctxKey : 'nrom:fixed';
+  const ctx = (typeof ctxKey === 'string' && ctxKey) ? ctxKey : UNKNOWN_FETCH_CTX_KEY;
   const cpu = typeof cpuAddr === 'number' ? (cpuAddr & 0xffff) : (Number(cpuAddr) & 0xffff);
   return `${ctx}:${hexN(cpu, 4)}`;
 }

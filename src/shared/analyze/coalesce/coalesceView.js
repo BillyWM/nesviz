@@ -1,3 +1,4 @@
+import { siteKeyFor } from '../fetchContext.js';
 import { DEFAULT_COALESCE_CONFIG } from './config.js';
 
 function confRank(c) {
@@ -50,12 +51,12 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
   const rawBlocks = Array.isArray(rawAnalysis.blocks) ? rawAnalysis.blocks : [];
   const sorted = [...rawBlocks].sort((a, b) => (a.romStart ?? 0) - (b.romStart ?? 0));
 
-  // Fast lookup from CPU start -> raw block index. 🤖
-  const cpuStartToIndex = new Map();
+  // Fast lookup from canonical start site key -> raw block index. 🤖
+  const startSiteKeyToIndex = new Map();
   for (let i = 0; i < sorted.length; i++) {
     const b = sorted[i];
-    const cpuStart = b?.lines?.[0]?.cpuAddr;
-    if (typeof cpuStart === 'number') cpuStartToIndex.set(cpuStart & 0xffff, i);
+    const startSiteKey = blockStartSiteKey(b);
+    if (startSiteKey) startSiteKeyToIndex.set(startSiteKey, i);
   }
 
   const blockAliases = {}; // rawBlockId -> coalescedBlockId (we use the group leader raw id) 🤖
@@ -65,8 +66,31 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
     return !!a && !!b && typeof a.romEnd === 'number' && typeof b.romStart === 'number' && a.romEnd === b.romStart;
   }
 
-  function countInstrFromIndexToCpuStart(startIndex, targetCpuStart, maxInstr) {
-    // Walk forward in ROM order, counting instructions, until we reach a block starting at targetCpuStart. 🤖
+  function blockStartSiteKey(block) {
+    if (!block || typeof block !== 'object') return null;
+
+    const firstLine = block?.lines?.[0] || null;
+    if (typeof firstLine?.siteKey === 'string' && firstLine.siteKey) return firstLine.siteKey;
+
+    const firstInstance = block?.instances?.[0] || null;
+    if (typeof firstInstance?.siteKey === 'string' && firstInstance.siteKey) return firstInstance.siteKey;
+
+    const ctxKey = (typeof firstLine?.ctxKey === 'string' && firstLine.ctxKey)
+      || (typeof block?.ctxKey === 'string' && block.ctxKey)
+      || (typeof firstInstance?.ctxId === 'string' && firstInstance.ctxId)
+      || (typeof firstInstance?.fetchCtxKey === 'string' && firstInstance.fetchCtxKey)
+      || null;
+    const cpuStart = typeof firstLine?.cpuAddr === 'number'
+      ? firstLine.cpuAddr
+      : (typeof firstInstance?.cpuStart === 'number' ? firstInstance.cpuStart : null);
+    if (typeof cpuStart !== 'number') return null;
+    return siteKeyFor(ctxKey, cpuStart & 0xffff);
+  }
+
+  function countInstrFromIndexToStartSiteKey(startIndex, targetSiteKey, maxInstr) {
+    // Walk forward in ROM order, counting instructions, until we reach a block starting at targetSiteKey. 🤖
+    if (typeof targetSiteKey !== 'string' || !targetSiteKey) return { found: false, count: 0 };
+
     let count = 0;
     for (let i = startIndex; i < sorted.length; i++) {
       const b = sorted[i];
@@ -74,8 +98,7 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
         const prev = sorted[i - 1];
         if (!isContiguous(prev, b)) return { found: false, count };
       }
-      const cpuStart = b?.lines?.[0]?.cpuAddr;
-      if (typeof cpuStart === 'number' && ((cpuStart & 0xffff) === (targetCpuStart & 0xffff))) {
+      if (blockStartSiteKey(b) === targetSiteKey) {
         return { found: true, count };
       }
       const n = b?.lines?.length || 0;
@@ -98,9 +121,11 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
 
     // Forward branches: inline only if the join point is close to the fallthrough path. 🤖
     const nextIndex = endIndex + 1;
-    const expectedFallthroughIndex = cpuStartToIndex.get(fallthrough & 0xffff);
+    const fallthroughSiteKey = siteKeyFor(last?.ctxKey, fallthrough & 0xffff);
+    const targetSiteKey = siteKeyFor(last?.ctxKey, target & 0xffff);
+    const expectedFallthroughIndex = startSiteKeyToIndex.get(fallthroughSiteKey);
     const startIndex = typeof expectedFallthroughIndex === 'number' ? expectedFallthroughIndex : nextIndex;
-    const r = countInstrFromIndexToCpuStart(startIndex, target, config.branchInlineMaxInstr | 0);
+    const r = countInstrFromIndexToStartSiteKey(startIndex, targetSiteKey, config.branchInlineMaxInstr | 0);
     return !!r.found;
   }
 
@@ -129,7 +154,9 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
 
     // Check that the branch target is very near *after* the JMP stub in ROM order. 🤖
     const afterStubIndex = stubIndex + 1;
-    const r = countInstrFromIndexToCpuStart(afterStubIndex, prevFlow.target, config.jmpSkipMaxInstr | 0);
+    const prevCtxKey = prevLast?.ctxKey;
+    const targetSiteKey = siteKeyFor(prevCtxKey, prevFlow.target & 0xffff);
+    const r = countInstrFromIndexToStartSiteKey(afterStubIndex, targetSiteKey, config.jmpSkipMaxInstr | 0);
     return !!r.found;
   }
 
@@ -158,9 +185,9 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
     if (!prevFlow || prevFlow.type !== 'branch') return false;
     if (typeof prevFlow.fallthrough !== 'number' || typeof prevFlow.target !== 'number') return false;
 
-    const rtsCpuStart = rtsBlock?.lines?.[0]?.cpuAddr;
-    if (typeof rtsCpuStart !== 'number') return false;
-    if (((prevFlow.fallthrough & 0xffff) !== (rtsCpuStart & 0xffff))) return false;
+    const rtsStartSiteKey = blockStartSiteKey(rtsBlock);
+    const expectedRtsSiteKey = siteKeyFor(prevLast?.ctxKey, prevFlow.fallthrough & 0xffff);
+    if (!rtsStartSiteKey || rtsStartSiteKey !== expectedRtsSiteKey) return false;
 
     const rtsLast = rtsBlock?.lines?.[rtsBlock.lines.length - 1];
     const rtsFlow = rtsLast?.flow;
@@ -170,7 +197,8 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
     // Require that the branch target is forward and "near" after the early-return.
     // We use the same threshold as the general forward-branch inliner for now. 🤖
     const afterRtsIndex = rtsIndex + 1;
-    const r = countInstrFromIndexToCpuStart(afterRtsIndex, prevFlow.target, config.branchInlineMaxInstr | 0);
+    const targetSiteKey = siteKeyFor(prevLast?.ctxKey, prevFlow.target & 0xffff);
+    const r = countInstrFromIndexToStartSiteKey(afterRtsIndex, targetSiteKey, config.branchInlineMaxInstr | 0);
     return !!r.found;
   }
 
@@ -256,7 +284,8 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
 
       const next = sorted[j + 1];
       const canContinue = isContiguous(b, next);
-      if (!canContinue) {
+      const endsWithMapperWrite = !!last?.mapperWrite;
+      if (!canContinue || endsWithMapperWrite) {
         j++;
         break;
       }

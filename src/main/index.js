@@ -12,6 +12,8 @@ import { setMainWindow as setMainWindowForTraceStreamer } from './traceStreamerW
 import { registerAnalysisLogIpc, setMainWindow as setMainWindowForAnalysisLog } from './analysisLogWindow.js';
 import { registerTuningIpc } from './tuningState.js';
 import { setMainWindow as setMainWindowForTuning } from './tuningWindow.js';
+import { setMainWindow as setMainWindowForMemoryMap } from './memoryMapWindow.js';
+import { setMainWindow as setMainWindowForGraph } from './graphWindow.js';
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowState } from './windowState.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -64,6 +66,8 @@ app.whenReady().then(async () => {
   setMainWindowForTraceStreamer(win);
   setMainWindowForAnalysisLog(win);
   setMainWindowForTuning(win);
+  setMainWindowForMemoryMap(win);
+  setMainWindowForGraph(win);
   installAppMenu({ win, recentRoms });
 });
 

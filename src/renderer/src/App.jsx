@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BlockStack } from './components/BlockStack.jsx';
 import { ArtifactPanel } from './components/ArtifactPanel.jsx';
 import { buildViewATimelineFromBlocks } from './util/timeline.js';
+import { UNKNOWN_FETCH_CTX_KEY } from '../../shared/analyze/fetchContext.js';
 
 function useBlocksById(blocks) {
   return useMemo(() => new Map((blocks || []).map((b) => [b.id, b])), [blocks]);
@@ -35,7 +36,7 @@ function formatHexDump(bytes) {
 function normalizeSite(site) {
   if (!site || typeof site !== 'object') return null;
   let siteKey = typeof site.siteKey === 'string' && site.siteKey ? site.siteKey : null;
-  const ctxKey = (typeof site.ctxKey === 'string' && site.ctxKey) ? site.ctxKey : 'nrom:fixed';
+  const ctxKey = (typeof site.ctxKey === 'string' && site.ctxKey) ? site.ctxKey : UNKNOWN_FETCH_CTX_KEY;
   const cpuAddr = typeof site.cpuAddr === 'number' ? (site.cpuAddr & 0xffff) : (site.cpuAddr != null ? (Number(site.cpuAddr) & 0xffff) : null);
   const romOff = typeof site.romOff === 'number' ? (site.romOff | 0) : (site.romOff != null && Number.isFinite(Number(site.romOff)) ? (Number(site.romOff) | 0) : null);
   if (!siteKey && typeof cpuAddr === 'number') siteKey = `${ctxKey}:${fmtCpu(cpuAddr)}`;
@@ -119,7 +120,7 @@ export default function App() {
     const exactByCtx = new Map();
     const byCtx = new Map();
     for (const b of blocks || []) {
-      const ctxId = (b?.instances?.[0]?.ctxId) || b?.ctxKey || 'nrom:fixed';
+      const ctxId = (b?.instances?.[0]?.ctxId) || b?.ctxKey || UNKNOWN_FETCH_CTX_KEY;
       if (!exactByCtx.has(ctxId)) exactByCtx.set(ctxId, new Map());
       const exact = exactByCtx.get(ctxId);
 
@@ -163,7 +164,7 @@ export default function App() {
       return null;
     }
 
-    return (cpuAddr, ctxId = 'nrom:fixed') => {
+    return (cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) => {
       if (typeof cpuAddr !== 'number') return null;
       const addr = cpuAddr & 0xffff;
       const exact = exactByCtx.get(ctxId);
@@ -174,7 +175,7 @@ export default function App() {
   }, [blocks]);
 
   const canNavigateCpuAddr = useMemo(() => {
-    return (cpuAddr, ctxId = 'nrom:fixed') => !!resolveBlockIdForCpuAddr(cpuAddr, ctxId);
+    return (cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) => !!resolveBlockIdForCpuAddr(cpuAddr, ctxId);
   }, [resolveBlockIdForCpuAddr]);
 
   const resolveBlockIdForRomOff = useMemo(() => {
@@ -278,7 +279,7 @@ export default function App() {
     }
   }, [romHash]);
 
-  function navigateToCpuAddr(cpuAddr, ctxId = 'nrom:fixed') {
+  function navigateToCpuAddr(cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) {
     if (typeof cpuAddr !== 'number') return;
     const blockId = resolveBlockIdForCpuAddr(cpuAddr, ctxId);
     if (!blockId) {
@@ -297,7 +298,7 @@ export default function App() {
   function updateHoveredLine(lineInfo) {
     if (!lineInfo) return;
     const siteKey = typeof lineInfo.siteKey === 'string' ? lineInfo.siteKey : null;
-    const ctxKey = (typeof lineInfo.ctxKey === 'string' && lineInfo.ctxKey) ? lineInfo.ctxKey : 'nrom:fixed';
+    const ctxKey = (typeof lineInfo.ctxKey === 'string' && lineInfo.ctxKey) ? lineInfo.ctxKey : UNKNOWN_FETCH_CTX_KEY;
     const romOff = typeof lineInfo.romOff === 'number' ? lineInfo.romOff : Number(lineInfo.romOff);
     const cpuAddr = typeof lineInfo.cpuAddr === 'number' ? lineInfo.cpuAddr : (lineInfo.cpuAddr != null ? Number(lineInfo.cpuAddr) : null);
     const labelTarget = (lineInfo.labelTarget === 'operand') ? 'operand' : 'line';
@@ -361,7 +362,7 @@ export default function App() {
     const menuH = 48;
     const x = Math.max(8, Math.min(clientX ?? 0, Math.max(8, w - menuW - 8)));
     const y = Math.max(8, Math.min(clientY ?? 0, Math.max(8, h - menuH - 8)));
-    setContextMenu({ kind: 'block', x, y, siteKey: blockInfo.siteKey || null, ctxKey: blockInfo.ctxKey || 'nrom:fixed', romOff: Number.isFinite(romOff) ? (romOff | 0) : null, cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null, blockId: blockInfo.blockId || null });
+    setContextMenu({ kind: 'block', x, y, siteKey: blockInfo.siteKey || null, ctxKey: blockInfo.ctxKey || UNKNOWN_FETCH_CTX_KEY, romOff: Number.isFinite(romOff) ? (romOff | 0) : null, cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null, blockId: blockInfo.blockId || null });
   }
 
   function openGapContextMenu(gapInfo, clientX, clientY) {
@@ -435,7 +436,7 @@ export default function App() {
     stack.push(fromId);
   }
 
-  function navigateToCpuAddrWithHistory(cpuAddr, ctxId = 'nrom:fixed') {
+  function navigateToCpuAddrWithHistory(cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) {
     if (!suppressHistoryPushRef.current) pushCurrentLocationForLinkClick();
     navigateToCpuAddr(cpuAddr, ctxId);
   }
@@ -463,7 +464,7 @@ export default function App() {
       if (msg.kind === 'addr') {
         const aRaw = (typeof msg.cpuAddr === 'number') ? msg.cpuAddr : Number(msg.cpuAddr);
         if (!Number.isFinite(aRaw) || aRaw < 0) return;
-        const ctxId = (typeof msg.ctxId === 'string' && msg.ctxId) ? msg.ctxId : 'nrom:fixed';
+        const ctxId = (typeof msg.ctxId === 'string' && msg.ctxId) ? msg.ctxId : UNKNOWN_FETCH_CTX_KEY;
         const a = (aRaw & 0xffff);
         if (!canNavigateCpuAddr(a, ctxId)) return;
         navigateToCpuAddrWithHistory(a, ctxId);
@@ -588,6 +589,61 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function loadActiveAnalysisIntoUi(statusPrefix) {
+    const tlRes = await window.nesviz.getTimeline();
+    const artRes = await window.nesviz.getArtifacts();
+
+    if (tlRes.ok) {
+      console.log('NesViz getTimeline', tlRes);
+      if (tlRes.debug) console.log('NesViz analysis debug', tlRes.debug);
+      const idx = (tlRes.blocksIndex || [])
+        .map((b) => {
+          if (!b) return null;
+          const romStart = typeof b.romStart === 'number' ? b.romStart : Number(b.romStart);
+          const romEnd = typeof b.romEnd === 'number' ? b.romEnd : Number(b.romEnd);
+          const cpuStart = typeof b.cpuStart === 'number' ? b.cpuStart : (b.cpuStart != null ? Number(b.cpuStart) : null);
+          const cpuEnd = typeof b.cpuEnd === 'number' ? b.cpuEnd : (b.cpuEnd != null ? Number(b.cpuEnd) : null);
+          if (!Number.isFinite(romStart) || !Number.isFinite(romEnd)) return null;
+          return { ...b, romStart, romEnd, cpuStart: Number.isFinite(cpuStart) ? cpuStart : null, cpuEnd: Number.isFinite(cpuEnd) ? cpuEnd : null };
+        })
+        .filter(Boolean);
+
+      let built = Array.isArray(tlRes.timeline) && tlRes.timeline.length ? tlRes.timeline : buildViewATimelineFromBlocks(idx);
+
+      // Ultra-defensive fallback: if coercion worked but the timeline builder still yields no code,
+      // show a simple code-only list so we never end up with a blank/only-gap PRG view. 🤖
+      if (built.length === 0 && idx.length) {
+        const sorted = [...idx].sort((a, b) => a.romStart - b.romStart);
+        built = sorted.map((b) => ({
+          type: 'code',
+          blockId: b.id,
+          romStart: b.romStart,
+          romEnd: b.romEnd,
+          byteLen: (b.romEnd - b.romStart) | 0
+        }));
+      }
+
+      const codeCount = built.filter((t) => t.type === 'code').length;
+      const dataCount = built.filter((t) => t.type === 'data').length;
+      setStatus(`${statusPrefix} Blocks: ${idx.length}. Rendered: ${built.length} items (${codeCount} code, ${dataCount} data).`);
+      setTimeline(built);
+      setBlocks(idx);
+      setBlockAliases(tlRes.blockAliases || {});
+      setMapper(tlRes.mapper);
+      setStats(tlRes.stats);
+      setAnalysisDebug(tlRes.debug || null);
+    }
+
+    if (artRes.ok) {
+      console.log('NesViz getArtifacts', artRes);
+      setArtifacts(artRes.artifacts || []);
+      setUnresolvedSites(artRes.unresolvedSites || []);
+      setPointsOfInterest(artRes.pointsOfInterest || []);
+      setMapper(artRes.mapper);
+      setStats(artRes.stats);
+    }
+  }
+
   async function openRom() {
     setStatus('Opening ROM…');
     try {
@@ -626,7 +682,11 @@ export default function App() {
       setPointsOfInterest([]);
       setMarkedPoiSpan(null);
       setFocusLocation(null);
-      setStatus('ROM loaded.');
+      if (res.hasCachedAnalysis) {
+        await loadActiveAnalysisIntoUi('Loaded cached analysis.');
+      } else {
+        setStatus('ROM loaded.');
+      }
     } catch (e) {
       setStatus(`Open failed: ${e?.message ?? String(e)}`);
     }
@@ -670,7 +730,11 @@ export default function App() {
       setPointsOfInterest([]);
       setFocusLocation(null);
       setMarkedPoiSpan(null);
-      setStatus('ROM loaded.');
+      if (res.hasCachedAnalysis) {
+        await loadActiveAnalysisIntoUi('Loaded cached analysis.');
+      } else {
+        setStatus('ROM loaded.');
+      }
     } catch (e) {
       setStatus(`Open failed: ${e?.message ?? String(e)}`);
     }
@@ -741,66 +805,13 @@ export default function App() {
     setGapBytesLoadingByKey({});
     setAnalysisDebug(null);
     try {
-      const runRes = await window.nesviz.runStaticNrom();
+      const runRes = await window.nesviz.runStaticAnalysis();
       if (!runRes.ok) {
         setStatus(runRes.error || 'Analysis failed');
         return;
       }
 
-      const tlRes = await window.nesviz.getTimeline();
-      const artRes = await window.nesviz.getArtifacts();
-
-      if (tlRes.ok) {
-        console.log('NesViz getTimeline', tlRes);
-        if (tlRes.debug) console.log('NesViz analysis debug', tlRes.debug);
-        const idx = (tlRes.blocksIndex || [])
-          .map((b) => {
-            if (!b) return null;
-            const romStart = typeof b.romStart === 'number' ? b.romStart : Number(b.romStart);
-            const romEnd = typeof b.romEnd === 'number' ? b.romEnd : Number(b.romEnd);
-            const cpuStart = typeof b.cpuStart === 'number' ? b.cpuStart : (b.cpuStart != null ? Number(b.cpuStart) : null);
-            const cpuEnd = typeof b.cpuEnd === 'number' ? b.cpuEnd : (b.cpuEnd != null ? Number(b.cpuEnd) : null);
-            if (!Number.isFinite(romStart) || !Number.isFinite(romEnd)) return null;
-            return { ...b, romStart, romEnd, cpuStart: Number.isFinite(cpuStart) ? cpuStart : null, cpuEnd: Number.isFinite(cpuEnd) ? cpuEnd : null };
-          })
-          .filter(Boolean);
-
-        let built = Array.isArray(tlRes.timeline) && tlRes.timeline.length ? tlRes.timeline : buildViewATimelineFromBlocks(idx);
-
-        // Ultra-defensive fallback: if coercion worked but the timeline builder still yields no code,
-        // show a simple code-only list so we never end up with a blank/only-gap PRG view. 🤖
-        if (built.length === 0 && idx.length) {
-          const sorted = [...idx].sort((a, b) => a.romStart - b.romStart);
-          built = sorted.map((b) => ({
-            type: 'code',
-            blockId: b.id,
-            romStart: b.romStart,
-            romEnd: b.romEnd,
-            byteLen: (b.romEnd - b.romStart) | 0
-          }));
-        }
-
-        const codeCount = built.filter((t) => t.type === 'code').length;
-        const dataCount = built.filter((t) => t.type === 'data').length;
-        setStatus(`Analysis complete. Blocks: ${idx.length}. Rendered: ${built.length} items (${codeCount} code, ${dataCount} data).`);
-        setTimeline(built);
-        setBlocks(idx);
-        setBlockAliases(tlRes.blockAliases || {});
-        setMapper(tlRes.mapper);
-        setStats(tlRes.stats);
-        setAnalysisDebug(tlRes.debug || null);
-      }
-
-      if (artRes.ok) {
-        console.log('NesViz getArtifacts', artRes);
-        setArtifacts(artRes.artifacts || []);
-        setUnresolvedSites(artRes.unresolvedSites || []);
-        setPointsOfInterest(artRes.pointsOfInterest || []);
-        setMapper(artRes.mapper);
-        setStats(artRes.stats);
-      }
-
-      // Status is set above based on what was rendered.
+      await loadActiveAnalysisIntoUi('Analysis complete.');
     } catch (e) {
       setStatus(`Analysis failed: ${e?.message ?? String(e)}`);
     } finally {

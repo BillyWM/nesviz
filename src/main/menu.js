@@ -5,6 +5,8 @@ import { showLabelsWindow } from './labelsWindow.js';
 import { showTraceStreamerWindow } from './traceStreamerWindow.js';
 import { showAnalysisLogWindow } from './analysisLogWindow.js';
 import { showTuningWindow } from './tuningWindow.js';
+import { showMemoryMapWindow } from './memoryMapWindow.js';
+import { showGraphWindow } from './graphWindow.js';
 
 let currentWin = null;
 let currentRecentRoms = [];
@@ -62,7 +64,7 @@ function buildTemplate({ win, recentRoms }) {
       label: 'View',
       submenu: [
         {
-          label: 'View ROM list',
+          label: 'ROM List',
           accelerator: 'CommandOrControl+L',
           click: () => {
             showRomListWindow();
@@ -72,6 +74,18 @@ function buildTemplate({ win, recentRoms }) {
           label: 'Labels',
           click: () => {
             showLabelsWindow();
+          }
+        },
+        {
+          label: 'Memory Map',
+          click: () => {
+            showMemoryMapWindow();
+          }
+        },
+        {
+          label: 'Graph',
+          click: () => {
+            showGraphWindow();
           }
         }
       ]

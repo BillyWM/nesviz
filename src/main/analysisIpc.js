@@ -10,6 +10,10 @@ import { sliceCdlForRom } from '../shared/analyze/cdl/nesCdl.js';
 import { updateRecentRoms } from './menu.js';
 import { appendAnalysisLogLines } from './analysisLogWindow.js';
 import { getTuningState } from './tuningState.js';
+import { buildGraphData } from '../shared/analyze/visual/buildGraphData.js';
+import { notifyMemoryMapDataChanged } from './memoryMapWindow.js';
+import { notifyGraphDataChanged } from './graphWindow.js';
+import { loadAnalysisCache, saveAnalysisCache } from './analysisCache.js';
 import {
   getBookmarksForRomHash,
   setBookmarkForRomHash,
@@ -67,7 +71,248 @@ function fmtHex(value, width) {
   return n.toString(16).toUpperCase().padStart(width, '0');
 }
 
-function runStaticNromInWorker(payload, opts = null) {
+function getStaticAnalysisMapperKind(header) {
+  const m = header?.mapperNumber | 0;
+  const family = header?.analysisMapper?.mapperFamily || null;
+  if (m === 3 || m === 185) return 'CNROM';
+  if (m === 13) return 'CPROM';
+  if (m === 2) return 'UxROM';
+  if (m === 94) return 'UN1ROM';
+  if (m === 7) return 'AxROM';
+  if (m === 66) return 'GxROM';
+  if (m === 1) return 'MMC1';
+  if (m === 34 && family === 'BNROM') return 'BNROM';
+  return 'NROM';
+}
+
+function clearActiveAnalysisState(s) {
+  if (!s) return;
+  s.analysisRaw = null;
+  s.analysis = null;
+  s.blockAliases = null;
+  s.blockById = null;
+}
+
+function applyAnalysisResultToActiveState(s, result) {
+  if (!s) throw new Error('No active ROM');
+  const raw = result?.raw ?? null;
+  const analysis = result?.analysis ?? null;
+  const blockAliases = result?.blockAliases ?? null;
+  if (!analysis || !Array.isArray(analysis.blocks)) {
+    throw new Error('Invalid analysis payload');
+  }
+  s.analysisRaw = raw;
+  s.analysis = analysis;
+  s.blockAliases = blockAliases;
+  s.blockById = new Map(analysis.blocks.map((b) => [b.id, b]));
+}
+
+
+function parseAddressKey(key) {
+  const [space, addrText] = String(key || '').split(':');
+  const addr = Number.parseInt(addrText, 10);
+  if (!space || !Number.isFinite(addr)) return null;
+  return { space, addr: space === 'rom' ? (addr >>> 0) : (addr & 0xffff) };
+}
+
+function coalesceOccupiedRanges(bits, start = 0, end = bits?.length || 0) {
+  const ranges = [];
+  let idx = Math.max(0, start | 0);
+  const limit = Math.max(idx, Math.min(bits?.length || 0, end | 0));
+  while (idx < limit) {
+    while (idx < limit && !bits[idx]) idx++;
+    if (idx >= limit) break;
+    const rangeStart = idx;
+    idx++;
+    while (idx < limit && bits[idx]) idx++;
+    ranges.push({ start: rangeStart - start, end: idx - start, type: 'group' });
+  }
+  return ranges;
+}
+
+function getBlockConfidenceById(blocks) {
+  const map = new Map();
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    const id = String(block?.id || '');
+    if (!id) continue;
+    const confidence = block?.confidence === 'probable' ? 'probable' : 'certain';
+    const prev = map.get(id);
+    if (prev === 'certain') continue;
+    map.set(id, confidence);
+  }
+  return map;
+}
+
+function classifyGroupType(group, blockConfidenceById) {
+  const baseType = group?.space === 'rom' ? 'romData' : 'group';
+  const touching = Array.isArray(group?.touchingBlockIds) ? group.touchingBlockIds : [];
+  if (!touching.length) return baseType;
+  let sawProbable = false;
+  for (const blockId of touching) {
+    const conf = blockConfidenceById.get(String(blockId));
+    if (conf === 'certain') return baseType;
+    if (conf === 'probable') sawProbable = true;
+  }
+  return sawProbable ? `${baseType}Light` : baseType;
+}
+
+function applyTypedRange(types, start, end, type) {
+  const limit = Math.min(types.length, end | 0);
+  for (let i = Math.max(0, start | 0); i < limit; i++) {
+    const prev = types[i] || 'empty';
+    if (prev === 'code') continue;
+    if (type === 'code') {
+      types[i] = 'code';
+      continue;
+    }
+    if (type === 'codeLight') {
+      types[i] = prev === 'empty' ? 'codeLight' : prev;
+      continue;
+    }
+    if (prev === 'codeLight') continue;
+    if (type === 'romData' || type === 'group') {
+      types[i] = type;
+      continue;
+    }
+    if (type === 'romDataLight') {
+      if (prev === 'empty' || prev === 'groupLight') types[i] = 'romDataLight';
+      continue;
+    }
+    if (type === 'groupLight') {
+      if (prev === 'empty') types[i] = 'groupLight';
+    }
+  }
+}
+
+function coalesceTypedRanges(types, start = 0, end = types?.length || 0) {
+  const ranges = [];
+  let idx = Math.max(0, start | 0);
+  const limit = Math.max(idx, Math.min(types?.length || 0, end | 0));
+  while (idx < limit) {
+    const type = types[idx] || 'empty';
+    const rangeStart = idx;
+    idx++;
+    while (idx < limit && (types[idx] || 'empty') === type) idx++;
+    ranges.push({ start: rangeStart - start, end: idx - start, type });
+  }
+  return ranges;
+}
+
+function getPrgRegionSizeBytes(analysisMapper, prgSize) {
+  const meta = analysisMapper || null;
+  if (meta?.prgWindowModel === 'mmc1-variable') return 16 * 1024;
+  const swap = Number(meta?.prgSwapUnitBytes);
+  if (Number.isFinite(swap) && swap > 0) return swap | 0;
+  const slots = Array.isArray(meta?.prgFetchLayout?.slots) ? meta.prgFetchLayout.slots : [];
+  const slotSizes = slots
+    .map((slot) => Number(slot?.sizeBytes))
+    .filter((size) => Number.isFinite(size) && size > 0)
+    .sort((a, b) => a - b);
+  if (slotSizes.length) return slotSizes[0] | 0;
+  return Math.max(1, prgSize | 0);
+}
+
+function buildMemoryMapDataForActive() {
+  const s = active;
+  if (!s?.ines) {
+    return {
+      ok: true,
+      hasRom: false,
+      hasAnalysis: false,
+      rowWidthBytes: 64,
+      cellSizePx: 16,
+      ram: null,
+      prg: null,
+      rom: null,
+      mapper: null
+    };
+  }
+
+  const rowWidthBytes = 64;
+  const cellSizePx = 16;
+  const prgBytes = s.ines.prg;
+  const prgSize = prgBytes?.length | 0;
+  const analysis = s.analysis || null;
+  const groups = Array.isArray(analysis?.memoryDiscoveries?.groups) ? analysis.memoryDiscoveries.groups : [];
+  const blocks = Array.isArray(analysis?.blocks) ? analysis.blocks : [];
+  const blockConfidenceById = getBlockConfidenceById(blocks);
+
+  const ramTypes = new Array(0x800).fill('empty');
+  for (const group of groups) {
+    if (group?.space === 'rom') continue;
+    const groupType = classifyGroupType(group, blockConfidenceById);
+    for (const key of group?.memberAddressKeys || []) {
+      const parsed = parseAddressKey(key);
+      if (!parsed) continue;
+      if (parsed.space === 'zp') {
+        if (parsed.addr >= 0 && parsed.addr < 0x100) applyTypedRange(ramTypes, parsed.addr, parsed.addr + 1, groupType);
+      } else if (parsed.space === 'ram') {
+        if (parsed.addr >= 0 && parsed.addr < 0x800) applyTypedRange(ramTypes, parsed.addr, parsed.addr + 1, groupType);
+      }
+    }
+  }
+
+  const ramOccupiedRanges = coalesceTypedRanges(ramTypes, 0, ramTypes.length);
+
+  const prgTypes = new Array(Math.max(0, prgSize)).fill('empty');
+  for (const group of groups) {
+    if (group?.space !== 'rom') continue;
+    const groupType = classifyGroupType(group, blockConfidenceById);
+    for (const span of group?.spans || []) {
+      const start = Math.max(0, Math.min(prgTypes.length, Number(span?.start) | 0));
+      const end = Math.max(start, Math.min(prgTypes.length, (Number(span?.end) | 0) + 1));
+      applyTypedRange(prgTypes, start, end, groupType);
+    }
+  }
+
+  for (const block of blocks) {
+    const romStart = Number(block?.romStart);
+    const romEnd = Number(block?.romEnd);
+    if (!Number.isFinite(romStart) || !Number.isFinite(romEnd)) continue;
+    const start = Math.max(0, Math.min(prgTypes.length, romStart | 0));
+    const end = Math.max(start, Math.min(prgTypes.length, romEnd | 0));
+    const blockType = 'code';
+    applyTypedRange(prgTypes, start, end, blockType);
+  }
+
+  const analysisMapper = s.ines.analysisMapper || analysis?.mapper?.meta || null;
+  const regionSizeBytes = getPrgRegionSizeBytes(analysisMapper, prgSize);
+  const regions = [];
+  for (let start = 0, index = 0; start < prgSize; start += regionSizeBytes, index++) {
+    const end = Math.min(prgSize, start + regionSizeBytes);
+    regions.push({
+      index,
+      start,
+      end,
+      occupiedRanges: coalesceTypedRanges(prgTypes, start, end)
+    });
+  }
+
+  return {
+    ok: true,
+    hasRom: true,
+    hasAnalysis: !!analysis,
+    rowWidthBytes,
+    cellSizePx,
+    rom: {
+      filename: s.filename,
+      mapperNumber: s.ines.mapperNumber,
+      prgSize
+    },
+    mapper: analysis?.mapper || { kind: null, meta: analysisMapper },
+    ram: {
+      sizeBytes: 0x800,
+      occupiedRanges: ramOccupiedRanges
+    },
+    prg: {
+      sizeBytes: prgSize,
+      regionSizeBytes,
+      regions
+    }
+  };
+}
+
+function runStaticAnalysisInWorker(payload, opts = null) {
   const onProgress = typeof opts?.onProgress === 'function' ? opts.onProgress : null;
   const onWorker = typeof opts?.onWorker === 'function' ? opts.onWorker : null;
   return new Promise((resolve, reject) => {
@@ -120,7 +365,7 @@ function runStaticNromInWorker(payload, opts = null) {
 }
 
 // Persisted ROM folder scan cache.
-const ROM_FOLDER_CACHE_VERSION = 1;
+const ROM_FOLDER_CACHE_VERSION = 2;
 const ROM_FOLDER_CACHE_FILE = 'romFolderCache.json';
 let romFolderCache = null;
 let romFolderCacheLoadPromise = null;
@@ -234,6 +479,17 @@ export function registerAnalysisIpc() {
       blockById: null
     };
 
+    let cachedAnalysisLoaded = false;
+    try {
+      const cachedResult = await loadAnalysisCache(romHash);
+      applyAnalysisResultToActiveState(active, cachedResult);
+      cachedAnalysisLoaded = true;
+    } catch (err) {
+      clearActiveAnalysisState(active);
+      if (err?.code !== 'ENOENT') {
+        console.warn('Analysis cache load failed while opening ROM; ignoring cached analysis:', err);
+      }
+    }
 
     // Update recent ROMs (persisted in userData). This also refreshes the app menu.
     try {
@@ -242,6 +498,9 @@ export function registerAnalysisIpc() {
     } catch {
       // Ignore recent list failures.
     }
+    try { notifyMemoryMapDataChanged(); } catch {}
+    try { notifyGraphDataChanged(); } catch {}
+
     return {
       ok: true,
       romHash,
@@ -254,8 +513,15 @@ export function registerAnalysisIpc() {
         prgSize: ines.prg.length,
         chrSize: ines.chr.length
       },
-      vectors
+      vectors,
+      hasCachedAnalysis: cachedAnalysisLoaded
     };
+  }
+
+  function isStaticAnalysisSupportedHeader(header) {
+    if (!header) return false;
+    const kind = getStaticAnalysisMapperKind(header);
+    return kind === 'NROM' ? ((header.mapperNumber | 0) === 0) : !!kind;
   }
 
   async function readInesHeaderOnly(filepath) {
@@ -286,6 +552,7 @@ export function registerAnalysisIpc() {
         hasTrainer: header.hasTrainer,
         isInes2: header.isNes2,
         isTargetMapper: header.isTargetMapper,
+        isAnalysisSupported: isStaticAnalysisSupportedHeader(header),
         nromKind,
         analysisMapper: header.analysisMapper
       };
@@ -474,6 +741,7 @@ export function registerAnalysisIpc() {
                 chrBytes: h.chrBytes,
                 mapperNumber: h.mapperNumber,
                 mapperName: h.analysisMapper?.boardName || h.mapperName,
+                isAnalysisSupported: h.isAnalysisSupported !== false,
                 nromKind: h.nromKind,
                 hasTrainer: h.hasTrainer,
                 isInes2: h.isInes2
@@ -570,10 +838,10 @@ export function registerAnalysisIpc() {
 
     // CDL is loaded and stored, but not applied until the user runs analysis. 🤖
     // Clear any previous analysis results so the user doesn't confuse the old view with the CDL-applied view. 🤖
-    s.analysisRaw = null;
-    s.analysis = null;
-    s.blockAliases = null;
-    s.blockById = null;
+    clearActiveAnalysisState(s);
+
+    try { notifyMemoryMapDataChanged(); } catch {}
+    try { notifyGraphDataChanged(); } catch {}
 
     return {
       ok: true,
@@ -587,14 +855,13 @@ export function registerAnalysisIpc() {
     };
   });
 
-  ipcMain.handle('nesviz:runStaticNrom', async (evt) => {
+  ipcMain.handle('nesviz:runStaticAnalysis', async (evt) => {
     const s = active;
     if (!s) return { ok: false, error: 'Load a ROM first.' };
     const m = s.ines.mapperNumber | 0;
     const prgSize = (s.ines?.prg?.length | 0) || 0;
 
-    const family = s.ines.analysisMapper?.mapperFamily || null;
-    const isSupported = m === 0 || m === 1 || m === 2 || m === 3 || m === 13 || m === 94 || m === 185 || m === 7 || m === 66 || (m === 34 && family === 'BNROM');
+    const isSupported = isStaticAnalysisSupportedHeader(s.ines);
     if (!isSupported) {
       return {
         ok: false,
@@ -603,23 +870,15 @@ export function registerAnalysisIpc() {
     }
 
 
-    let mapperKind = 'NROM';
-    if (m === 3 || m === 185) mapperKind = 'CNROM';
-    else if (m === 13) mapperKind = 'CPROM';
-    else if (m === 2) mapperKind = 'UxROM';
-    else if (m === 94) mapperKind = 'UN1ROM';
-    else if (m === 7) mapperKind = 'AxROM';
-    else if (m === 66) mapperKind = 'GxROM';
-    else if (m === 1) mapperKind = 'MMC1';
-    else if (m === 34 && family === 'BNROM') mapperKind = 'BNROM';
+    const mapperKind = getStaticAnalysisMapperKind(s.ines);
+
+    await terminateActiveWorker();
 
     let workerResult;
     try {
       let thisWorker = null;
-      // If analysis is already running, stop it (single-ROM, single-analysis).
-      await terminateActiveWorker();
 
-      workerResult = await runStaticNromInWorker({
+      workerResult = await runStaticAnalysisInWorker({
         prgBytes: s.ines.prg,
         vectors: s.vectors,
         mapperKind,
@@ -663,23 +922,30 @@ export function registerAnalysisIpc() {
     // If the user switched ROMs while analysis was running, discard these results.
     if (active !== s) return { ok: false, error: 'ROM changed during analysis' };
 
-    const { raw, analysis, blockAliases } = workerResult;
-    s.analysisRaw = raw;
-    s.analysis = analysis;
-    s.blockAliases = blockAliases;
+    applyAnalysisResultToActiveState(s, workerResult);
 
-    // Index blocks for cheap block lookups (getBlock/getBlocks). 🤖
-    s.blockById = new Map(analysis.blocks.map((b) => [b.id, b]));
+    try {
+      await saveAnalysisCache(s.romHash, {
+        raw: s.analysisRaw,
+        analysis: s.analysis,
+        blockAliases: s.blockAliases
+      });
+    } catch (err) {
+      console.warn('Analysis cache save failed:', err);
+    }
+
+    try { notifyMemoryMapDataChanged(); } catch {}
+    try { notifyGraphDataChanged(); } catch {}
 
     try {
       appendAnalysisLogLines(formatAnalysisLogLines({
         filename: s.filename,
-        mapperKind: analysis?.mapper?.kind || mapperKind,
-        analysis
+        mapperKind: s.analysis?.mapper?.kind || mapperKind,
+        analysis: s.analysis
       }));
     } catch {}
 
-    return { ok: true, stats: analysis.stats };
+    return { ok: true, stats: s.analysis.stats };
   });
 
   ipcMain.handle('nesviz:getTimeline', async () => {
@@ -832,6 +1098,44 @@ export function registerAnalysisIpc() {
       stats: s.analysis.stats,
       rom: { filename: s.filename, mapperNumber: s.ines.mapperNumber, prgSize: s.ines.prg.length }
     };
+  });
+
+  ipcMain.handle('nesviz:getGraphData', async () => {
+    const s = active;
+    if (!s?.ines) {
+      return {
+        ok: true,
+        hasRom: false,
+        hasAnalysis: false,
+        nodes: [],
+        edges: [],
+        rom: null,
+        mapper: null,
+        stats: null
+      };
+    }
+
+    const graph = buildGraphData({
+      rawAnalysis: s.analysisRaw || null,
+      coalescedAnalysis: s.analysis || null,
+      blockAliases: s.blockAliases || null
+    });
+
+    return {
+      ...graph,
+      hasRom: true,
+      rom: {
+        filename: s.filename,
+        mapperNumber: s.ines.mapperNumber,
+        prgSize: s.ines.prg.length
+      },
+      mapper: s.analysis?.mapper || { kind: null, meta: s.ines.analysisMapper || null },
+      stats: s.analysis?.stats || null
+    };
+  });
+
+  ipcMain.handle('nesviz:getMemoryMapData', async () => {
+    return buildMemoryMapDataForActive();
   });
 
   ipcMain.handle('nesviz:getPrgBytes', async (_evt, { romStart, romEnd }) => {

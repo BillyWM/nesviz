@@ -1,5 +1,7 @@
 // Convert kept "probable code" chunks (physical PRG offsets) into contextual entrypoints for CFG discovery.
 
+import { UNKNOWN_FETCH_CTX_KEY } from '../fetchContext.js';
+
 export function deriveProbableSeedItems({ keptChunks, mapper, maxChunks }) {
   const lim = typeof maxChunks === 'number' ? Math.max(0, maxChunks | 0) : keptChunks.length;
   const seeds = [];
@@ -12,7 +14,7 @@ export function deriveProbableSeedItems({ keptChunks, mapper, maxChunks }) {
     const sites = mapper.seedSitesForRomOff ? mapper.seedSitesForRomOff(romStart) : [];
     for (const site of sites) {
       if (!site || typeof site.cpuAddr !== 'number') continue;
-      const ctxKey = mapper.fetchCtxKey ? mapper.fetchCtxKey(site.fetchCtx) : 'nrom:fixed';
+      const ctxKey = mapper.fetchCtxKey ? mapper.fetchCtxKey(site.fetchCtx) : UNKNOWN_FETCH_CTX_KEY;
       const key = `${ctxKey}:${site.cpuAddr & 0xffff}`;
       if (seen.has(key)) continue;
       seen.add(key);

@@ -10,21 +10,21 @@ import { scoreJumpTableSignals } from './jumpTableScoring.js';
 // 2) classifies them into decoded vs candidate via a centralized scoring engine
 // 3) emits artifacts + (only when decoded) synthetic CFG edges. 🤖
 
-export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteStatesByPc }) {
+export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteStatesBySiteKey, blocksByStartSite = null }) {
   const artifacts = [];
-  const newEntrypoints = new Set();
+  const newSeedItems = [];
   const syntheticEdges = [];
 
   for (const site of unresolvedSites) {
     const pc = site.pc & 0xffff;
-    const s = siteStatesByPc.get(pc);
+    const s = site?.siteKey ? siteStatesBySiteKey?.get(String(site.siteKey)) : null;
 
     const signals = extractJumpTableSignals({ prgBytes, mapper, site, state: s, enumCap: 32 });
     const scored = scoreJumpTableSignals(signals);
     if (!scored.shouldEmit) continue;
 
     // Build an artifact that always shows what we found, even if we couldn't decode concrete targets. 🤖
-    const id = `jt:${hex4(pc)}`;
+    const id = `jt:${site.siteKey || hex4(pc)}`;
     const targets = signals.targets || [];
 
     artifacts.push({
@@ -53,16 +53,30 @@ export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteSta
     // Only create synthetic CFG edges and new entrypoints when we have concrete, mappable targets. 🤖
     if (scored.status === 'decoded') {
       for (const t of targets) {
-        if (t.targetRomOff != null) newEntrypoints.add(t.targetCpu & 0xffff);
-        if (!t.targetBlockId) continue;
-        syntheticEdges.push({ from: site.blockId, to: t.targetBlockId, kind: 'jump_table' });
+        const activeCtx = site.fetchCtx || mapper.initialFetchCtx();
+        const resolvedTargets = mapper.targetSitesForCpuAddr
+          ? mapper.targetSitesForCpuAddr(activeCtx, t.targetCpu & 0xffff, { maxForks: 4 })
+          : { sites: [{ cpuAddr: t.targetCpu & 0xffff, fetchCtx: activeCtx }], ambiguous: false };
+        if (resolvedTargets?.sites?.length && !resolvedTargets.ambiguous) {
+          for (const seed of resolvedTargets.sites) {
+            if (typeof seed?.cpuAddr !== 'number' || !seed.fetchCtx) continue;
+            newSeedItems.push({ cpuAddr: seed.cpuAddr & 0xffff, fetchCtx: seed.fetchCtx, confidence: 'certain' });
+          }
+        }
+        if (!blocksByStartSite) continue;
+        for (const seed of resolvedTargets?.sites || []) {
+          const ctxKey = mapper.fetchCtxKey ? mapper.fetchCtxKey(seed.fetchCtx) : (seed.fetchCtx?.key || 'default');
+          const siteKey = `${ctxKey}:${(seed.cpuAddr & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
+          const toId = blocksByStartSite.get(siteKey) || null;
+          if (toId) syntheticEdges.push({ from: site.blockId, to: toId, kind: 'jump_table' });
+        }
       }
     }
   }
 
   return {
     artifacts,
-    newEntrypointsCpuAddrs: Array.from(newEntrypoints),
+    newSeedItems,
     syntheticEdges
   };
 }

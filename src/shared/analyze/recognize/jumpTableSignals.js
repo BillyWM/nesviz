@@ -1,12 +1,13 @@
 import { hex2, hex4 } from '../../cpu6502/fmt.js';
+import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
 import { vEnumerate } from '../vsa/value.js';
 
 // Extract jump-table "signals" (objective facts) from provenance/state at an indirect JMP site. 🤖
 //
 // This file intentionally contains no confidence decisions; it only reports what we can prove/observe. 🤖
 
-function readPrgAtCpu(prgBytes, mapper, cpuAddr) {
-  const romOff = mapper.cpuToRomOff(cpuAddr & 0xffff);
+function readPrgAtCpu(prgBytes, mapper, cpuAddr, fetchCtx = null) {
+  const romOff = cpuToRomOffWithMapper(mapper, cpuAddr, fetchCtx);
   if (romOff == null) return null;
   if (romOff < 0 || romOff >= prgBytes.length) return null;
   return prgBytes[romOff] & 0xff;
@@ -65,6 +66,26 @@ function summarizeProv(p) {
   return p.kind;
 }
 
+function pickFallbackIndexSource(state, enumCap = 32) {
+  const preference = [];
+  if (state?.lastCmp?.reg === 'X' || state?.lastCmp?.reg === 'Y') preference.push(state.lastCmp.reg);
+  if (state?.lastNZ?.reg === 'X' || state?.lastNZ?.reg === 'Y') preference.push(state.lastNZ.reg);
+  for (const reg of ['X', 'Y']) if (!preference.includes(reg)) preference.push(reg);
+
+  const candidates = [];
+  for (const reg of preference) {
+    const tracked = reg === 'X' ? state?.X : state?.Y;
+    const vals = tracked?.abs ? vEnumerate(tracked.abs, enumCap) : null;
+    if (vals?.length) candidates.push({ reg, vals });
+  }
+  if (!candidates.length) return null;
+  const preferred = candidates[0];
+  const smallest = candidates.slice().sort((a, b) => a.vals.length - b.vals.length)[0];
+  if (preferred && preferred.vals.length <= Math.max(8, enumCap >> 1)) return preferred;
+  if (smallest && smallest.vals.length <= Math.max(8, enumCap >> 1)) return smallest;
+  return null;
+}
+
 function absSummary(abs) {
   if (!abs) return { kind: 'unknown', summary: 'unknown', cardinality: null };
   if (abs.kind === 'unknown') return { kind: 'unknown', summary: 'unknown', cardinality: null };
@@ -80,6 +101,7 @@ function absSummary(abs) {
 export function extractJumpTableSignals({ prgBytes, mapper, site, state, enumCap = 32 }) {
   const pc = site.pc & 0xffff;
   const ptrAddr = site.ptrAddr & 0xffff;
+  const fetchCtx = site.fetchCtx || mapper.initialFetchCtx();
 
   if (!state) {
     return {
@@ -173,34 +195,46 @@ export function extractJumpTableSignals({ prgBytes, mapper, site, state, enumCap
   let shapeMatch = 'split_lohi';
   if (((loD.base + 1) & 0xffff) === (hiD.base & 0xffff)) shapeMatch = 'interleaved_words';
 
-  const idxTracked = indexSource === 'X' ? state.X : indexSource === 'Y' ? state.Y : null;
-  const idxAbs = idxTracked?.abs || null;
+  let effectiveIndexSource = indexSource;
+  let inferredIndexSource = false;
+  let idxTracked = effectiveIndexSource === 'X' ? state.X : effectiveIndexSource === 'Y' ? state.Y : null;
+  let idxAbs = idxTracked?.abs || null;
+  let idxEnum = idxAbs ? vEnumerate(idxAbs, enumCap) : null;
+  if ((!effectiveIndexSource || !sameIndexSource || !idxEnum?.length) && sameIndexExpr) {
+    const fallback = pickFallbackIndexSource(state, enumCap);
+    if (fallback) {
+      effectiveIndexSource = fallback.reg;
+      inferredIndexSource = true;
+      idxTracked = effectiveIndexSource === 'X' ? state.X : state.Y;
+      idxAbs = idxTracked?.abs || null;
+      idxEnum = fallback.vals;
+    }
+  }
   const idxInfo = absSummary(idxAbs);
-  const idxEnum = idxAbs ? vEnumerate(idxAbs, enumCap) : null;
   const idxEnumerable = !!idxEnum && idxEnum.length > 0;
 
+  const indexSourceResolved = !!effectiveIndexSource && (sameIndexSource || inferredIndexSource);
   const baseLo = loD.base;
   const baseHi = hiD.base;
-  const baseReadable = (readPrgAtCpu(prgBytes, mapper, baseLo) != null) && (readPrgAtCpu(prgBytes, mapper, baseHi) != null);
+  const baseReadable = (readPrgAtCpu(prgBytes, mapper, baseLo, fetchCtx) != null) && (readPrgAtCpu(prgBytes, mapper, baseHi, fetchCtx) != null);
 
   const targets = [];
   let decodeOk = false;
-  if (idxEnumerable && baseReadable && sameIndexExpr && sameIndexSource) {
+  if (idxEnumerable && baseReadable && sameIndexExpr && indexSourceResolved) {
     decodeOk = true;
     for (const i of idxEnum) {
-      const loByte = readPrgAtCpu(prgBytes, mapper, (baseLo + i) & 0xffff);
-      const hiByte = readPrgAtCpu(prgBytes, mapper, (baseHi + i) & 0xffff);
+      const loByte = readPrgAtCpu(prgBytes, mapper, (baseLo + i) & 0xffff, fetchCtx);
+      const hiByte = readPrgAtCpu(prgBytes, mapper, (baseHi + i) & 0xffff, fetchCtx);
       if (loByte == null || hiByte == null) {
         decodeOk = false;
         break;
       }
       const targetCpu = (loByte | (hiByte << 8)) & 0xffff;
-      const targetRomOff = mapper.cpuToRomOff(targetCpu);
+      const targetRomOff = cpuToRomOffWithMapper(mapper, targetCpu, fetchCtx);
       targets.push({
         index: i & 0xff,
         targetCpu,
-        targetRomOff,
-        targetBlockId: targetRomOff == null ? null : `rom:${targetRomOff.toString(16).toUpperCase().padStart(6, '0')}`
+        targetRomOff
       });
     }
     if (!decodeOk) targets.length = 0;
@@ -208,11 +242,11 @@ export function extractJumpTableSignals({ prgBytes, mapper, site, state, enumCap
 
   const decodeBlockedBy = [];
   if (!sameIndexExpr) decodeBlockedBy.push('lo_hi_index_mismatch');
-  if (!sameIndexSource) decodeBlockedBy.push('lo_hi_index_source_mismatch');
-  if (!indexSource) decodeBlockedBy.push('missing_index_source');
+  if (!sameIndexSource && !inferredIndexSource) decodeBlockedBy.push('lo_hi_index_source_mismatch');
+  if (!effectiveIndexSource) decodeBlockedBy.push('missing_index_source');
   if (!idxEnumerable) decodeBlockedBy.push(idxInfo.kind === 'range' ? 'index_range_too_large' : 'index_unknown');
   if (!baseReadable) decodeBlockedBy.push('base_unmapped');
-  if (idxEnumerable && baseReadable && sameIndexExpr && sameIndexSource && targets.length === 0) decodeBlockedBy.push('decode_failed');
+  if (idxEnumerable && baseReadable && sameIndexExpr && indexSourceResolved && targets.length === 0) decodeBlockedBy.push('decode_failed');
 
   return {
     pc,
@@ -220,16 +254,17 @@ export function extractJumpTableSignals({ prgBytes, mapper, site, state, enumCap
     ptrInZp,
     shapeMatch,
     shape: shapeMatch,
-    indexSource,
+    indexSource: effectiveIndexSource,
     baseLo,
     baseHi,
     basesAreConst,
     baseReadable,
     sameIndexExpr,
-    sameIndexSource,
+    sameIndexSource: sameIndexSource || inferredIndexSource,
     idxInfo,
     idxEnumerable,
     idxEnum,
+    inferredIndexSource,
     targets,
     decodeOk,
     evidence,

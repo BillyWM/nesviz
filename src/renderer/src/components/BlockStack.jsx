@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { BlockCard } from './BlockCard.jsx';
 import { hex4, hex6 } from '../util/hex.js';
 import { GapCard } from './GapCard.jsx';
+import { UNKNOWN_FETCH_CTX_KEY } from '../../../shared/analyze/fetchContext.js';
 
 export function BlockStack({
   timeline,
@@ -114,7 +115,7 @@ export function BlockStack({
     const lastLen = parseBytesLen(lastLine.bytesText);
     const lastCtxKey = (typeof lastLine.ctxKey === 'string' && lastLine.ctxKey)
       ? lastLine.ctxKey
-      : ((prevIndex?.instances?.[0]?.ctxId) || prevIndex?.ctxKey || 'nrom:fixed');
+      : ((prevIndex?.instances?.[0]?.ctxId) || prevIndex?.ctxKey || UNKNOWN_FETCH_CTX_KEY);
     if (lastCpu == null || !(lastLen > 0)) return ['Could not infer the next CPU site after the preceding block.'];
 
     const nextCpu = (lastCpu + lastLen) & 0xffff;
@@ -154,13 +155,13 @@ export function BlockStack({
     }
 
     const failures = Array.isArray(debug?.decodeFailuresByPc) ? debug.decodeFailuresByPc : [];
-    const failure = failures.find((f) => ((f?.pc ?? null) === nextCpu) && (((f?.ctxKey) || 'nrom:fixed') === lastCtxKey));
+    const failure = failures.find((f) => ((f?.pc ?? null) === nextCpu) && (((f?.ctxKey) || UNKNOWN_FETCH_CTX_KEY) === lastCtxKey));
     if (failure && !reasons.some((r) => r.includes('Attempt failed because'))) {
       reasons.push(`Attempt failed because ${mapDecodeFailureReason(failure.reason)}.`);
     }
 
     const unresolved = Array.isArray(debug?.cfg?.unresolvedDirectTargets) ? debug.cfg.unresolvedDirectTargets : [];
-    const unresolvedHit = unresolved.find((u) => ((u?.target ?? null) === nextCpu) && ((((u?.targetCtxKey) || (u?.ctxKey)) || 'nrom:fixed') === lastCtxKey));
+    const unresolvedHit = unresolved.find((u) => ((u?.target ?? null) === nextCpu) && ((((u?.targetCtxKey) || (u?.ctxKey)) || UNKNOWN_FETCH_CTX_KEY) === lastCtxKey));
     if (unresolvedHit) reasons.push(`Decoded control flow targeted $${hex4(nextCpu)}, but that start site did not materialize as a block.`);
 
     const flowType = lastLine?.flow?.type || null;

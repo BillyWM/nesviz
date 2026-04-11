@@ -62,7 +62,8 @@ archive.glob("**/*", {
     outName, // don't zip the zip we’re creating
     "**/.git/**",
     "**/node_modules/**",
-	"*.zip"
+	"*.zip",
+	"package-lock.json"
   ],
 });
 

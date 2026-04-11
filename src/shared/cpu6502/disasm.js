@@ -1,6 +1,7 @@
 import { OPCODES } from './opcodes.js';
 import { hex2, hex4 } from './fmt.js';
-import { exactBacking, fetchCtxKey, siteKeyFor, unknownBacking } from '../analyze/fetchContext.js';
+import { UNKNOWN_FETCH_CTX_KEY, exactBacking, fetchCtxKey, siteKeyFor, unknownBacking } from '../analyze/fetchContext.js';
+import { cpuToRomOffWithMapper } from '../analyze/map/cpuToRomOff.js';
 
 const MODE_LEN = {
   imp: 1,
@@ -93,7 +94,7 @@ function flowInfo(mnemonic, mode, bytes, pc, len) {
 export function disasmOne(prgBytes, pc, romOff, extra = null) {
   const opByte = prgBytes[romOff];
   const entry = OPCODES[opByte];
-  const ctxKey = extra?.ctxKey || 'nrom:fixed';
+  const ctxKey = extra?.ctxKey || UNKNOWN_FETCH_CTX_KEY;
   const backing = extra?.backing || exactBacking(romOff);
   const base = {
     pc,
@@ -142,7 +143,7 @@ export function disasmOne(prgBytes, pc, romOff, extra = null) {
 export function disasmOneAtCtx(prgBytes, mapper, fetchCtx, pc) {
   const resolved = mapper.resolveCodeFetch
     ? mapper.resolveCodeFetch(fetchCtx, pc & 0xffff)
-    : { ok: true, ctxKey: fetchCtxKey(fetchCtx), backing: exactBacking(mapper.cpuToRomOff(pc & 0xffff)) };
+    : { ok: true, ctxKey: fetchCtxKey(fetchCtx), backing: exactBacking(cpuToRomOffWithMapper(mapper, pc, fetchCtx)) };
   const romOff = resolved?.backing?.kind === 'exact' ? resolved.backing.romOff : null;
   const ctxKey = resolved?.ctxKey || fetchCtxKey(fetchCtx);
   if (!resolved?.ok || romOff == null) {

@@ -1,9 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
 import { analyzeStaticFixedSwitch16k, analyzeStaticFixedSwitch32k, analyzeStaticMmc1, analyzeStaticNrom } from '../shared/analyze/analyzeStatic.js';
-import { buildCoalescedAnalysisView } from '../shared/analyze/coalesce/coalesceView.js';
-import { DEFAULT_COALESCE_CONFIG } from '../shared/analyze/coalesce/config.js';
-import { runPointsOfInterestRecognizers } from '../shared/analyze/recognize/pointsOfInterest.js';
+import { buildDisplayAnalysis } from '../shared/analyze/display/buildDisplayAnalysis.js';
 
 async function run() {
   try {
@@ -29,25 +27,19 @@ async function run() {
         : isMmc1
           ? await analyzeStaticMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.mmc1 || tuningOverrides?.fixedSwitch16k || null })
           : await analyzeStaticNrom({
-          prgBytes,
-          vectors,
-          mapperKind,
-          mapperMeta,
-          cdlPrg,
-          cdlChr,
-          cdlMeta,
-          yieldEveryMs: (yieldEveryMs | 0) || 0,
-          onVsaProgress,
-          vsaProgressEveryMs: 100
-        });
+            prgBytes,
+            vectors,
+            mapperKind,
+            mapperMeta,
+            cdlPrg,
+            cdlChr,
+            cdlMeta,
+            yieldEveryMs: (yieldEveryMs | 0) || 0,
+            onVsaProgress,
+            vsaProgressEveryMs: 100
+          });
 
-    if (isFixedSwitch16k || isFixedSwitch32k || isMmc1) {
-      parentPort?.postMessage({ ok: true, raw, analysis: raw, blockAliases: {} });
-      return;
-    }
-
-    const { analysis, blockAliases } = buildCoalescedAnalysisView(raw, DEFAULT_COALESCE_CONFIG);
-    runPointsOfInterestRecognizers(analysis);
+    const { analysis, blockAliases } = buildDisplayAnalysis(raw);
     parentPort?.postMessage({ ok: true, raw, analysis, blockAliases });
   } catch (err) {
     const msg = err?.message || String(err);

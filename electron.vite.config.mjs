@@ -30,7 +30,9 @@ export default defineConfig({
           labels: resolve('src/renderer/labels.html'),
           tracestreamer: resolve('src/renderer/tracestreamer.html'),
           analysislog: resolve('src/renderer/analysislog.html'),
-          tuning: resolve('src/renderer/tuning.html')
+          tuning: resolve('src/renderer/tuning.html'),
+          memorymap: resolve('src/renderer/memorymap.html'),
+          graph: resolve('src/renderer/graph.html')
         }
       }
     }

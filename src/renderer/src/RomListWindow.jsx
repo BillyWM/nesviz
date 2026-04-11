@@ -297,9 +297,10 @@ export default function RomListWindow() {
             <button
               key={it.filePath}
               type="button"
-              className="nv-modal-row"
+              className={`nv-modal-row${it.isAnalysisSupported === false ? ' nv-modal-row-unsupported' : ''}`}
               onClick={() => openRom(it.filePath)}
-              title={it.filePath}
+              title={it.isAnalysisSupported === false ? `${it.filePath}
+Not currently supported for static analysis.` : it.filePath}
             >
               <div className="nv-col nv-col-name">{it.filename}</div>
               <div className="nv-col nv-col-meta">{it.mapperName || 'NROM'}</div>

@@ -1,3 +1,4 @@
+import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
 import { disasmOneAt } from '../../cpu6502/disasm.js';
 import { hexN } from '../../cpu6502/fmt.js';
 
@@ -79,7 +80,7 @@ function scoreChunk({ mapper, lines, romStart, romEnd, stop }, cfg) {
     const f = ln.flow;
 
     function enqueueCpuTarget(cpuAddr) {
-      const tRo = mapper.cpuToRomOff(cpuAddr & 0xffff);
+      const tRo = cpuToRomOffWithMapper(mapper, cpuAddr, fetchCtx);
       if (tRo == null) return;
       if (tRo < romStart || tRo >= romEnd) return;
       if (!byRom.has(tRo)) return;
@@ -91,7 +92,7 @@ function scoreChunk({ mapper, lines, romStart, romEnd, stop }, cfg) {
 
     if (f.type === 'branch') {
       branchCount++;
-      const tRo = mapper.cpuToRomOff(f.target);
+      const tRo = cpuToRomOffWithMapper(mapper, f.target, fetchCtx);
       if (tRo != null && tRo >= romStart && tRo < romEnd && byRom.has(tRo)) branchHits++;
       enqueueCpuTarget(f.target);
       enqueueCpuTarget(f.fallthrough);

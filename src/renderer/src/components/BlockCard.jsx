@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { hex4, hex6 } from '../util/hex.js';
 import { CodeLines } from './CodeLines.jsx';
+import { UNKNOWN_FETCH_CTX_KEY } from '../../../shared/analyze/fetchContext.js';
 
 function rangeText(start, end) {
   return `${hex6(start)}–${hex6(end)}`;
@@ -30,7 +31,7 @@ export function BlockCard({
   onContextMenuBlock
 }) {
   const inst = blockIndex?.instances?.[0];
-  const ctxId = inst?.ctxId || 'nrom:fixed';
+  const ctxId = inst?.ctxId || UNKNOWN_FETCH_CTX_KEY;
   const cpuStart = inst?.cpuStart;
   const romStart = blockIndex?.romStart ?? item.romStart;
   const romEnd = blockIndex?.romEnd ?? item.romEnd;

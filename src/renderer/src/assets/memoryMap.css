@@ -1,0 +1,163 @@
+:root {
+  --memory-map-bg: #0b0f15;
+  --memory-map-panel-bg: rgba(11, 15, 21, 0.96);
+  --memory-map-text: #d8dde6;
+  --memory-map-text-strong: #e6eaf2;
+  --memory-map-text-muted: #7f8795;
+  --memory-map-border: rgba(255, 255, 255, 0.08);
+  --memory-map-grid-base: rgba(255, 255, 255, 0.055);
+  --memory-map-grid-line: rgba(255, 255, 255, 0.12);
+  --memory-map-empty: rgba(143, 151, 166, 0.18);
+  --memory-map-group: linear-gradient(180deg, rgba(107, 172, 255, 0.88) 0%, rgba(61, 121, 230, 0.92) 100%);
+  --memory-map-group-light: linear-gradient(180deg, rgba(168, 206, 255, 0.48) 0%, rgba(112, 158, 238, 0.54) 100%);
+  --memory-map-rom-data: linear-gradient(180deg, rgba(88, 189, 104, 0.92) 0%, rgba(50, 143, 67, 0.96) 100%);
+  --memory-map-rom-data-light: linear-gradient(180deg, rgba(154, 223, 164, 0.5) 0%, rgba(92, 180, 108, 0.58) 100%);
+  --memory-map-code: linear-gradient(180deg, rgba(214, 165, 32, 0.96) 0%, rgba(176, 132, 18, 0.98) 100%);
+  --memory-map-code-light: linear-gradient(180deg, rgba(232, 202, 113, 0.6) 0%, rgba(197, 160, 58, 0.68) 100%);
+  --memory-map-warning: #c79a5b;
+}
+
+.memory-map-window {
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--memory-map-bg);
+  color: var(--memory-map-text);
+}
+
+.memory-map-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--memory-map-panel-bg);
+  border-bottom: 1px solid var(--memory-map-border);
+  padding: 10px 16px;
+}
+
+.memory-map-header-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.memory-map-scroller {
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.memory-map-status {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--memory-map-warning);
+}
+
+.memory-map-root {
+  min-width: calc(var(--memory-map-grid-width, 0px) + 110px);
+}
+
+.memory-map-section {
+  margin-top: var(--memory-map-section-top, 0px);
+}
+
+.memory-map-section-title {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--memory-map-text-strong);
+}
+
+.memory-map-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.memory-map-row {
+  display: flex;
+  align-items: center;
+  height: 16px;
+  margin-bottom: 1px;
+}
+
+.memory-map-row-label {
+  width: 88px;
+  flex: 0 0 auto;
+  padding-right: 10px;
+  font-size: 11px;
+  color: var(--memory-map-text-muted);
+  text-align: right;
+  user-select: none;
+}
+
+.memory-map-row-grid {
+  position: relative;
+  width: var(--memory-map-row-width, 0px);
+  height: 16px;
+  flex: 0 0 auto;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--memory-map-grid-base) 0,
+    var(--memory-map-grid-base) 15px,
+    var(--memory-map-grid-line) 15px,
+    var(--memory-map-grid-line) 16px
+  );
+  background-size: var(--memory-map-cell-size, 16px) 16px;
+  background-color: #11161e;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--memory-map-border);
+}
+
+.memory-map-span {
+  position: absolute;
+  left: var(--memory-map-span-left, 0px);
+  top: 0;
+  width: var(--memory-map-span-width, 0px);
+  height: 16px;
+  background: var(--memory-map-empty);
+}
+
+.memory-map-span--group {
+  background: var(--memory-map-group);
+}
+
+.memory-map-span--groupLight {
+  background: var(--memory-map-group-light);
+}
+
+.memory-map-span--romData {
+  background: var(--memory-map-rom-data);
+}
+
+.memory-map-span--romDataLight {
+  background: var(--memory-map-rom-data-light);
+}
+
+.memory-map-span--code {
+  background: var(--memory-map-code);
+}
+
+.memory-map-span--codeLight {
+  background: var(--memory-map-code-light);
+}
+
+.memory-map-gap {
+  height: 18px;
+}
+
+.memory-map-region-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.memory-map-region-label {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  color: var(--memory-map-text-muted);
+}
+
+.memory-map-empty-view {
+  min-height: 100vh;
+  background: var(--memory-map-bg);
+  color: var(--memory-map-text);
+  padding: 16px;
+}
