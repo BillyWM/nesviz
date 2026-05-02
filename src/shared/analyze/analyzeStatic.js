@@ -2,6 +2,8 @@ import { createNromMapper } from './map/nrom.js';
 import { createFixedSwitch16kMapper } from './map/fixedSwitch16k.js';
 import { createFixedSwitch32kMapper } from './map/fixedSwitch32k.js';
 import { createMmc1Mapper } from './map/mmc1.js';
+import { createMmc3Mapper } from './map/mmc3.js';
+import { buildVectorSeedItemsByFamily } from './vectorNavigation.js';
 import { cpuToRomOffWithMapper } from './map/cpuToRomOff.js';
 import { discoverCfg } from './discover/cfg.js';
 import { buildTimeline } from './discover/timeline.js';
@@ -16,7 +18,12 @@ import { DEFAULT_PROBABLE_CONFIG_NROM, DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K, 
 import { scanProbableCode } from './probable/scanUnknown.js';
 import { buildProbableInterruptRootSet } from './probable/rtiVectorHeuristic.js';
 import { deriveProbableSeedItems } from './probable/deriveSeeds.js';
-import { cpuAddrForRomOffUsingSlot, decodePrgCdlByte, isPrgDataObserved } from './cdl/nesCdl.js';
+import { decodePrgCdlByte, isPrgDataObserved, NES_CDL_FORMAT_MESEN2 } from './cdl/nesCdl.js';
+import { buildPrgOccupancy } from './occupancy/prgOccupancy.js';
+import { resolveBlockConflicts } from './postprocess/resolveBlockConflicts.js';
+import { detectMonotoneTables } from './data/detectMonotoneTables.js';
+import { attachMonotoneTableReaders } from './data/attachMonotoneTableReaders.js';
+import { deriveGoalDrivenProbeOffsets } from './data/goalDrivenProbableSearch.js';
 
 
 async function collectVsaData({
@@ -198,6 +205,30 @@ function buildVectorSeedDebug(mapper, seedItems) {
   };
 }
 
+function buildCodeOnlyBitmap(prgSize, blocks) {
+  const bitmap = new Uint8Array(Math.max(0, prgSize | 0));
+  for (const block of blocks || []) {
+    for (const line of block?.lines || []) {
+      const romOff = typeof line?.romOff === 'number' ? (line.romOff | 0) : null;
+      const len = typeof line?.len === 'number' ? (line.len | 0) : 0;
+      if (romOff == null || romOff < 0 || len <= 0) continue;
+      for (let i = romOff; i < Math.min(bitmap.length, romOff + len); i++) bitmap[i] = 1;
+    }
+  }
+  return bitmap;
+}
+
+function detectAndAttachMonotoneTables({ prgBytes, mapper, blocks, probableCfg }) {
+  const codeBitmap = buildCodeOnlyBitmap(prgBytes.length, blocks);
+  const detected = detectMonotoneTables({
+    prgBytes,
+    codeBitmap,
+    minEntries: probableCfg?.monotoneTableMinEntries ?? 4
+  });
+  const tables = attachMonotoneTableReaders({ blocks, monotoneTables: detected, mapper });
+  return { codeBitmap, tables };
+}
+
 async function runStaticAnalysisPipeline({
   prgBytes,
   vectors,
@@ -255,16 +286,67 @@ async function runStaticAnalysisPipeline({
         yieldEveryMs
       })
     : phase1;
-  const cfg = phase2.cfg;
+  let activePhase = phase2;
+  let activeBaseSeeds = phase2Base;
+  let activeCfg = phase2.cfg;
 
-  const finalSeedItems = mergeSeedItems(mapper, [phase2Base, phase2.exactSeedItems, phase2.speculativeSeedItems]);
-  const entryBlockIds = entryBlockIdsForSeeds(cfg, mapper, finalSeedItems);
+  const preGoalMonotone = detectAndAttachMonotoneTables({
+    prgBytes,
+    mapper,
+    blocks: activeCfg.blocks,
+    probableCfg
+  });
 
+  const goalDrivenSearch = probableCfg.goalDrivenMonotoneSearch
+    ? deriveGoalDrivenProbeOffsets({
+        prgBytes,
+        mapper,
+        codeBitmap: computeScanBitmap(preGoalMonotone.codeBitmap),
+        monotoneTables: preGoalMonotone.tables,
+        config: probableCfg
+      })
+    : { probeOffsets: [], stats: { unresolvedTableCount: 0, rawHitCount: 0, probeOffsetCount: 0, perTableHitCount: {} } };
+
+  let goalDrivenScan = { kept: [], regionStats: [] };
+  let goalDrivenSeeds = [];
+
+  if (probableCfg.enabled && goalDrivenSearch.probeOffsets.length) {
+    goalDrivenScan = scanProbableCode({
+      prgBytes,
+      mapper,
+      codeBitmap: computeScanBitmap(preGoalMonotone.codeBitmap),
+      config: probableCfg,
+      seedProbeOffsets: goalDrivenSearch.probeOffsets,
+      probableContext
+    });
+    const goalDrivenKept = (goalDrivenScan.kept || []).slice(0, Math.max(0, probableCfg.goalDrivenMaxPromotedChunks | 0));
+    goalDrivenSeeds = probableCfg.promoteToCfg
+      ? deriveProbableSeedItems({ keptChunks: goalDrivenKept, mapper, maxChunks: probableCfg.goalDrivenMaxPromotedChunks })
+      : [];
+
+    if (goalDrivenSeeds.length) {
+      activeBaseSeeds = [...activeBaseSeeds, ...goalDrivenSeeds];
+      activePhase = await runDispatchFixpoint({
+        prgBytes,
+        mapper,
+        baseSeedItems: activeBaseSeeds,
+        probableConfig: probableCfg,
+        cdlPrg: cdlResult?.prg || null,
+        yieldEveryMs
+      });
+      activeCfg = activePhase.cfg;
+    }
+  }
+
+  const finalSeedItems = mergeSeedItems(mapper, [activeBaseSeeds, activePhase.exactSeedItems, activePhase.speculativeSeedItems]);
+  const entryBlockIds = entryBlockIdsForSeeds(activeCfg, mapper, finalSeedItems);
+
+  const rawEdges = [...activeCfg.edges, ...activePhase.syntheticEdges];
   const { vsaFacts, vsaDataflow, memoryDiscoveries } = await collectVsaData({
     prgBytes,
     mapper,
-    blocks: cfg.blocks,
-    edges: [...cfg.edges, ...phase2.syntheticEdges],
+    blocks: activeCfg.blocks,
+    edges: rawEdges,
     entryBlockIds,
     vectorSeedItemsByFamily,
     vectorCpuAddrsByFamily: collectVectorCpuAddrsByFamily(vectors),
@@ -273,44 +355,84 @@ async function runStaticAnalysisPipeline({
     vsaProgressEveryMs
   });
 
-  const finalBitmap = computeFinalBitmap(cfg.codeBitmap);
-  const timeline = buildTimeline({ prgSize: prgBytes.length, blocks: cfg.blocks, bitmap: finalBitmap });
-  const probableBlockCount = cfg.blocks.filter((b) => b.confidence === 'probable').length;
-  const occupancyStats = computePrgOccupancyStats({
-    prgSize: prgBytes.length,
-    blocks: cfg.blocks,
-    memoryDiscoveries
+  const resolved = resolveBlockConflicts({
+    blocks: activeCfg.blocks,
+    edges: rawEdges,
+    unresolvedSites: activeCfg.unresolvedSites,
+    artifacts: activePhase.artifacts,
+    memoryDiscoveries,
+    vsaDataflow,
+    vsaFacts
   });
+
+  const finalMonotone = detectAndAttachMonotoneTables({
+    prgBytes,
+    mapper,
+    blocks: resolved.blocks,
+    probableCfg
+  });
+
+  const finalBitmap = computeFinalBitmap(activeCfg.codeBitmap);
+  const prgOccupancy = computePrgOccupancy({
+    prgSize: prgBytes.length,
+    blocks: resolved.blocks,
+    memoryDiscoveries: resolved.memoryDiscoveries,
+    cdlPrg: cdlResult?.prg || null,
+    cdlFormat: cdlResult?.meta?.format || NES_CDL_FORMAT_MESEN2
+  });
+  const timeline = buildTimeline({ prgSize: prgBytes.length, blocks: resolved.blocks, occupancy: prgOccupancy, bitmap: finalBitmap });
+  const probableBlockCount = resolved.blocks.filter((b) => b.confidence === 'probable').length;
+  const occupancyStats = prgOccupancy.stats;
   const determinedByteCount = occupancyStats.totalBytes;
   const coveragePct = occupancyStats.totalPct;
 
   return {
     mapper: { kind: mapperKind, prgSize: prgBytes.length, meta: mapperMeta || null },
-    blocks: cfg.blocks,
-    edges: [...cfg.edges, ...phase2.syntheticEdges],
+    blocks: resolved.blocks,
+    edges: resolved.edges,
     timeline,
-    artifacts: phase2.artifacts,
-    vsaFacts,
-    vsaDataflow,
-    memoryDiscoveries,
-    unresolvedSites: cfg.unresolvedSites,
+    artifacts: resolved.artifacts,
+    monotoneTables: finalMonotone.tables,
+    semanticFacts: [],
+    vsaFacts: resolved.vsaFacts,
+    vsaDataflow: resolved.vsaDataflow,
+    memoryDiscoveries: resolved.memoryDiscoveries,
+    unresolvedSites: resolved.unresolvedSites,
+    rawBlockIdAliases: resolved.rawBlockIdAliases,
     probable: {
       keptChunkCount: probableKeptAll.length,
       promotedChunkCount: probableKept.length,
       promotedSeedCount: probableSeeds.length,
       maxPromotedChunks: probableCfg.maxPromotedChunks,
       globalCapHit: probableKeptAll.length > probableKept.length,
-      regionSummaries: summarizeProbableRegions(probableScan.regionStats || [], mapper, prgBytes.length)
+      regionSummaries: summarizeProbableRegions(probableScan.regionStats || [], mapper, prgBytes.length),
+      goalDriven: {
+        probeOffsetCount: goalDrivenSearch.probeOffsets.length,
+        promotedSeedCount: goalDrivenSeeds.length,
+        keptChunkCount: (goalDrivenScan.kept || []).length,
+        maxPromotedChunks: probableCfg.goalDrivenMaxPromotedChunks,
+        rawHitCount: goalDrivenSearch.stats?.rawHitCount || 0,
+        unresolvedTableCount: goalDrivenSearch.stats?.unresolvedTableCount || 0,
+        regionSummaries: summarizeProbableRegions(goalDrivenScan.regionStats || [], mapper, prgBytes.length)
+      }
     },
     cdl: cdlResult,
+    prgOccupancy,
     debug: {
-      cfg: cfg.debug || null,
-      decodeFailuresByPc: cfg.decodeFailuresByPc || [],
+      cfg: activeCfg.debug || null,
+      decodeFailuresByPc: activeCfg.decodeFailuresByPc || [],
+      monotoneTables: {
+        preGoalCount: preGoalMonotone.tables.length,
+        finalCount: finalMonotone.tables.length,
+        unresolvedFinalCount: finalMonotone.tables.filter((table) => !table.promotedToPointerTable).length
+      },
+      rawConflictResolution: resolved.debug,
       ...(debugExtras || {})
     },
     stats: {
-      instructionCount: cfg.instructionCount,
-      blockCount: cfg.blocks.length,
+      instructionCount: activeCfg.instructionCount,
+      rawBlockCount: activeCfg.blocks.length,
+      blockCount: resolved.blocks.length,
       probableBlockCount,
       determinedByteCount,
       coveragePct,
@@ -326,99 +448,27 @@ async function runStaticAnalysisPipeline({
   };
 }
 
-function computePrgOccupancyStats({ prgSize, blocks, memoryDiscoveries }) {
-  const size = Math.max(0, prgSize | 0);
-  const types = new Uint8Array(size);
-
-  for (const group of memoryDiscoveries?.groups || []) {
-    if (group?.space !== 'rom') continue;
-    for (const span of group?.spans || []) {
-      const start = Math.max(0, Math.min(size, Number(span?.start) | 0));
-      const end = Math.max(start, Math.min(size, (Number(span?.end) | 0) + 1));
-      for (let i = start; i < end; i++) {
-        if (types[i] === 0) types[i] = 2;
-      }
-    }
-  }
-
-  for (const block of Array.isArray(blocks) ? blocks : []) {
-    const romStart = Number(block?.romStart);
-    const romEnd = Number(block?.romEnd);
-    if (!Number.isFinite(romStart) || !Number.isFinite(romEnd)) continue;
-    const start = Math.max(0, Math.min(size, romStart | 0));
-    const end = Math.max(start, Math.min(size, romEnd | 0));
-    for (let i = start; i < end; i++) types[i] = 1;
-  }
-
-  let codeBytes = 0;
-  let dataBytes = 0;
-  for (let i = 0; i < size; i++) {
-    if (types[i] === 1) codeBytes++;
-    else if (types[i] === 2) dataBytes++;
-  }
-  const unknownBytes = Math.max(0, size - codeBytes - dataBytes);
-  const totalBytes = codeBytes + dataBytes;
-  return {
-    codeBytes,
-    dataBytes,
-    unknownBytes,
-    totalBytes,
-    codePct: size ? (codeBytes * 100) / size : 0,
-    dataPct: size ? (dataBytes * 100) / size : 0,
-    unknownPct: size ? (unknownBytes * 100) / size : 0,
-    totalPct: size ? (totalBytes * 100) / size : 0
-  };
+function computePrgOccupancy({ prgSize, blocks, memoryDiscoveries, cdlPrg = null, cdlFormat = NES_CDL_FORMAT_MESEN2 }) {
+  return buildPrgOccupancy({
+    prgSize,
+    blocks,
+    memoryDiscoveries,
+    cdlPrg,
+    cdlFormat
+  });
 }
 
-
-function buildSingleContextVectorSeedItemsByFamily({ vectors, mapper }) {
-  const fetchCtx = mapper.initialFetchCtx();
-  const mk = (cpuAddr) => ({ cpuAddr: cpuAddr & 0xffff, fetchCtx, confidence: 'certain' });
-  return {
-    reset: (typeof vectors?.reset === 'number' && (vectors.reset & 0xffff) >= 0x8000) ? [mk(vectors.reset)] : [],
-    nmi: (typeof vectors?.nmi === 'number' && (vectors.nmi & 0xffff) >= 0x8000) ? [mk(vectors.nmi)] : [],
-    irq: (typeof vectors?.irqBrk === 'number' && (vectors.irqBrk & 0xffff) >= 0x8000) ? [mk(vectors.irqBrk)] : []
-  };
-}
 
 function flattenVectorSeedItemsByFamily(byFamily) {
   return [...(byFamily?.reset || []), ...(byFamily?.nmi || []), ...(byFamily?.irq || [])];
 }
 
-function collect32kVectorSeedsByFamily({ prgBytes, mapper }) {
-  const out = { reset: [], nmi: [], irq: [] };
-  const seen = new Set();
-  const bankCount = Math.max(1, mapper?.bankCount | 0);
-  const bankSize = 32 * 1024;
-  for (let bank = 0; bank < bankCount; bank++) {
-    const base = bank * bankSize;
-    if (base + 0x7fff >= prgBytes.length) break;
-    const fetchCtx = typeof mapper.ctxForBank === 'function' ? mapper.ctxForBank(bank) : mapper.initialFetchCtx();
-    const targets = {
-      reset: (prgBytes[base + 0x7ffc] | (prgBytes[base + 0x7ffd] << 8)) & 0xffff,
-      nmi: (prgBytes[base + 0x7ffa] | (prgBytes[base + 0x7ffb] << 8)) & 0xffff,
-      irq: (prgBytes[base + 0x7ffe] | (prgBytes[base + 0x7fff] << 8)) & 0xffff
-    };
-    for (const [family, cpuAddr] of Object.entries(targets)) {
-      if (cpuAddr < 0x8000) continue;
-      const resolved = mapper.resolveCodeFetch(fetchCtx, cpuAddr);
-      if (resolved?.backing?.kind !== 'exact') continue;
-      const key = `${family}:${mapper.fetchCtxKey(fetchCtx)}:${cpuAddr & 0xffff}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out[family].push({ cpuAddr: cpuAddr & 0xffff, fetchCtx, confidence: 'certain' });
-    }
-  }
-  return out;
-}
-
 function buildAnalysisProfileNrom({ prgBytes, vectors, mapperKind, mapperMeta, cdlPrg, cdlChr, cdlMeta, yieldEveryMs, onVsaProgress, vsaProgressEveryMs }) {
   const mapper = createNromMapper({ prgSize: prgBytes.length });
-  const cdlOverlay = deriveCdlOverlay({ cdlPrg, mapper, prgSize: prgBytes.length });
-  const vectorSeedItemsByFamily = buildSingleContextVectorSeedItemsByFamily({ vectors, mapper });
+  const cdlOverlay = deriveCdlEvidenceAndSeeds({ cdlPrg, mapper, prgSize: prgBytes.length, cdlFormat: cdlMeta?.format || NES_CDL_FORMAT_MESEN2 });
+  const vectorSeedItemsByFamily = buildVectorSeedItemsByFamily({ prgBytes, vectors, mapper });
   const baseCertainSeeds = flattenVectorSeedItemsByFamily(vectorSeedItemsByFamily);
-  const fetchCtx = mapper.initialFetchCtx();
-  const cdlSeedItems = (cdlOverlay?.seedItems || []).map((s) => ({ ...s, fetchCtx }));
+  const cdlSeedItems = cdlOverlay?.seedItems || [];
   const vsaRunId = 1;
   const vsaFactsOnProgress = (typeof onVsaProgress === 'function')
     ? (p) => onVsaProgress({ ...(p || {}), runId: vsaRunId })
@@ -441,9 +491,10 @@ function buildAnalysisProfileNrom({ prgBytes, vectors, mapperKind, mapperMeta, c
   };
 }
 
-function buildAnalysisProfileMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides }) {
+function buildAnalysisProfileMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg = null, cdlChr = null, cdlMeta = null }) {
   const mapper = createMmc1Mapper({ prgBytes, mapperMeta });
-  const vectorSeedItemsByFamily = buildSingleContextVectorSeedItemsByFamily({ vectors, mapper });
+  const cdlOverlay = deriveCdlEvidenceAndSeeds({ cdlPrg, mapper, prgSize: prgBytes.length, cdlFormat: cdlMeta?.format || NES_CDL_FORMAT_MESEN2 });
+  const vectorSeedItemsByFamily = buildVectorSeedItemsByFamily({ prgBytes, vectors, mapper });
   const baseCertainSeeds = flattenVectorSeedItemsByFamily(vectorSeedItemsByFamily);
   return {
     prgBytes,
@@ -452,16 +503,19 @@ function buildAnalysisProfileMmc1({ prgBytes, vectors, mapperKind, mapperMeta, p
     mapperKind,
     mapperMeta,
     vectorSeedItemsByFamily,
-    initialSeedItems: baseCertainSeeds,
+    initialSeedItems: [...baseCertainSeeds, ...(cdlOverlay?.seedItems || [])],
     probableCfg: buildProbableConfigFixedSwitch16K(probableConfigOverrides),
+    computeScanBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    computeFinalBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    cdlResult: cdlOverlay ? { meta: cdlMeta, prg: cdlPrg, chr: cdlChr, summary: cdlOverlay.summary } : null,
     debugExtras: buildVectorSeedDebug(mapper, baseCertainSeeds)
   };
 }
 
-function buildAnalysisProfileFixedSwitch16k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides }) {
-  const mapperNumber = mapperMeta?.mapperFamily === 'UN1ROM' || mapperKind === 'UN1ROM' ? 94 : 2;
-  const mapper = createFixedSwitch16kMapper({ prgBytes, mapperMeta, mapperNumber });
-  const vectorSeedItemsByFamily = buildSingleContextVectorSeedItemsByFamily({ vectors, mapper });
+function buildAnalysisProfileMmc3({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg = null, cdlChr = null, cdlMeta = null }) {
+  const mapper = createMmc3Mapper({ prgBytes, mapperMeta });
+  const cdlOverlay = deriveCdlEvidenceAndSeeds({ cdlPrg, mapper, prgSize: prgBytes.length, cdlFormat: cdlMeta?.format || NES_CDL_FORMAT_MESEN2 });
+  const vectorSeedItemsByFamily = buildVectorSeedItemsByFamily({ prgBytes, vectors, mapper });
   const baseCertainSeeds = flattenVectorSeedItemsByFamily(vectorSeedItemsByFamily);
   return {
     prgBytes,
@@ -470,15 +524,20 @@ function buildAnalysisProfileFixedSwitch16k({ prgBytes, vectors, mapperKind, map
     mapperKind,
     mapperMeta,
     vectorSeedItemsByFamily,
-    initialSeedItems: baseCertainSeeds,
-    probableCfg: buildProbableConfigFixedSwitch16K(probableConfigOverrides)
+    initialSeedItems: [...baseCertainSeeds, ...(cdlOverlay?.seedItems || [])],
+    probableCfg: buildProbableConfigFixedSwitch16K(probableConfigOverrides),
+    computeScanBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    computeFinalBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    cdlResult: cdlOverlay ? { meta: cdlMeta, prg: cdlPrg, chr: cdlChr, summary: cdlOverlay.summary } : null,
+    debugExtras: buildVectorSeedDebug(mapper, baseCertainSeeds)
   };
 }
 
-function buildAnalysisProfileFixedSwitch32k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides }) {
-  const mapperNumber = mapperMeta?.mapperFamily === 'BNROM' ? 34 : mapperMeta?.mapperFamily === 'GxROM' ? 66 : 7;
-  const mapper = createFixedSwitch32kMapper({ prgBytes, mapperMeta, mapperNumber });
-  const vectorSeedItemsByFamily = collect32kVectorSeedsByFamily({ prgBytes, mapper });
+function buildAnalysisProfileFixedSwitch16k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg = null, cdlChr = null, cdlMeta = null }) {
+  const mapperNumber = mapperMeta?.mapperFamily === 'UN1ROM' || mapperKind === 'UN1ROM' ? 94 : 2;
+  const mapper = createFixedSwitch16kMapper({ prgBytes, mapperMeta, mapperNumber });
+  const cdlOverlay = deriveCdlEvidenceAndSeeds({ cdlPrg, mapper, prgSize: prgBytes.length, cdlFormat: cdlMeta?.format || NES_CDL_FORMAT_MESEN2 });
+  const vectorSeedItemsByFamily = buildVectorSeedItemsByFamily({ prgBytes, vectors, mapper });
   const baseCertainSeeds = flattenVectorSeedItemsByFamily(vectorSeedItemsByFamily);
   return {
     prgBytes,
@@ -487,8 +546,32 @@ function buildAnalysisProfileFixedSwitch32k({ prgBytes, vectors, mapperKind, map
     mapperKind,
     mapperMeta,
     vectorSeedItemsByFamily,
-    initialSeedItems: baseCertainSeeds,
+    initialSeedItems: [...baseCertainSeeds, ...(cdlOverlay?.seedItems || [])],
+    probableCfg: buildProbableConfigFixedSwitch16K(probableConfigOverrides),
+    computeScanBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    computeFinalBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    cdlResult: cdlOverlay ? { meta: cdlMeta, prg: cdlPrg, chr: cdlChr, summary: cdlOverlay.summary } : null
+  };
+}
+
+function buildAnalysisProfileFixedSwitch32k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg = null, cdlChr = null, cdlMeta = null }) {
+  const mapperNumber = mapperMeta?.mapperFamily === 'BNROM' ? 34 : mapperMeta?.mapperFamily === 'GxROM' ? 66 : 7;
+  const mapper = createFixedSwitch32kMapper({ prgBytes, mapperMeta, mapperNumber });
+  const cdlOverlay = deriveCdlEvidenceAndSeeds({ cdlPrg, mapper, prgSize: prgBytes.length, cdlFormat: cdlMeta?.format || NES_CDL_FORMAT_MESEN2 });
+  const vectorSeedItemsByFamily = buildVectorSeedItemsByFamily({ prgBytes, vectors, mapper });
+  const baseCertainSeeds = flattenVectorSeedItemsByFamily(vectorSeedItemsByFamily);
+  return {
+    prgBytes,
+    vectors,
+    mapper,
+    mapperKind,
+    mapperMeta,
+    vectorSeedItemsByFamily,
+    initialSeedItems: [...baseCertainSeeds, ...(cdlOverlay?.seedItems || [])],
     probableCfg: buildProbableConfigFixedSwitch32K(probableConfigOverrides),
+    computeScanBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    computeFinalBitmap: (bitmap) => overlayDataEvidence(bitmap, cdlOverlay?.dataOnly01 || null),
+    cdlResult: cdlOverlay ? { meta: cdlMeta, prg: cdlPrg, chr: cdlChr, summary: cdlOverlay.summary } : null,
     debugExtras: buildVectorSeedDebug(mapper, baseCertainSeeds)
   };
 }
@@ -513,9 +596,25 @@ export async function analyzeStaticMmc1({
   vectors,
   mapperKind = 'MMC1',
   mapperMeta = null,
-  probableConfigOverrides = null
+  probableConfigOverrides = null,
+  cdlPrg = null,
+  cdlChr = null,
+  cdlMeta = null
 }) {
-  return runStaticAnalysisPipeline(buildAnalysisProfileMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides }));
+  return runStaticAnalysisPipeline(buildAnalysisProfileMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg, cdlChr, cdlMeta }));
+}
+
+export async function analyzeStaticMmc3({
+  prgBytes,
+  vectors,
+  mapperKind = 'MMC3',
+  mapperMeta = null,
+  probableConfigOverrides = null,
+  cdlPrg = null,
+  cdlChr = null,
+  cdlMeta = null
+}) {
+  return runStaticAnalysisPipeline(buildAnalysisProfileMmc3({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg, cdlChr, cdlMeta }));
 }
 
 export async function analyzeStaticFixedSwitch16k({
@@ -523,9 +622,12 @@ export async function analyzeStaticFixedSwitch16k({
   vectors,
   mapperKind = 'UxROM',
   mapperMeta = null,
-  probableConfigOverrides = null
+  probableConfigOverrides = null,
+  cdlPrg = null,
+  cdlChr = null,
+  cdlMeta = null
 }) {
-  return runStaticAnalysisPipeline(buildAnalysisProfileFixedSwitch16k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides }));
+  return runStaticAnalysisPipeline(buildAnalysisProfileFixedSwitch16k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg, cdlChr, cdlMeta }));
 }
 
 export async function analyzeStaticFixedSwitch32k({
@@ -533,9 +635,12 @@ export async function analyzeStaticFixedSwitch32k({
   vectors,
   mapperKind = 'AxROM',
   mapperMeta = null,
-  probableConfigOverrides = null
+  probableConfigOverrides = null,
+  cdlPrg = null,
+  cdlChr = null,
+  cdlMeta = null
 }) {
-  return runStaticAnalysisPipeline(buildAnalysisProfileFixedSwitch32k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides }));
+  return runStaticAnalysisPipeline(buildAnalysisProfileFixedSwitch32k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides, cdlPrg, cdlChr, cdlMeta }));
 }
 
 function summarizeProbableRegions(regionStats, mapper, prgSize) {
@@ -585,6 +690,7 @@ function emptyResult() {
     vsaDataflow: null,
     memoryDiscoveries: null,
     unresolvedSites: [],
+    prgOccupancy: null,
     stats: {
       instructionCount: 0,
       blockCount: 0,
@@ -620,33 +726,30 @@ function overlayDataEvidence(codeBitmap01, dataObserved01) {
   return out;
 }
 
-function deriveCdlOverlay({ cdlPrg, mapper, prgSize }) {
+function deriveCdlEvidenceAndSeeds({ cdlPrg, mapper, prgSize, cdlFormat = NES_CDL_FORMAT_MESEN2 }) {
   if (!cdlPrg) return null;
   const limit = Math.min(prgSize, cdlPrg.length);
   const dataOnly01 = new Uint8Array(prgSize);
   const seedItems = [];
   const seen = new Set();
-  const summary = { present: true, prgByteCount: limit, execByteCount: 0, dataByteCount: 0, jsrTargetSeedCount: 0, jumpTargetSeedCount: 0, execRunSeedCount: 0, totalSeedCount: 0 };
+  const summary = { present: true, prgByteCount: limit, execByteCount: 0, dataByteCount: 0, subEntrySeedCount: 0, jumpTargetSeedCount: 0, execRunSeedCount: 0, totalSeedCount: 0 };
   let prevExec = false;
 
   for (let romOff = 0; romOff < limit; romOff++) {
-    const flags = decodePrgCdlByte(cdlPrg[romOff]);
+    const flags = decodePrgCdlByte(cdlPrg[romOff], cdlFormat);
     if (flags.exec) summary.execByteCount++;
-    if (isPrgDataObserved(flags) && !flags.exec) {
+    if (isPrgDataObserved(flags, cdlFormat) && !flags.exec) {
       dataOnly01[romOff] = 1;
       summary.dataByteCount++;
     }
     if (flags.exec && !prevExec) {
-      const cpuAddr = pickCpuAddrForRomOff({ romOff, slot: flags.slot, mapper });
-      if (addSeed({ cpuAddr, confidence: 'certain' })) summary.execRunSeedCount++;
+      if (addSeedsForRomOff(romOff)) summary.execRunSeedCount++;
     }
-    if (flags.jsrTarget) {
-      const cpuAddr = pickCpuAddrForRomOff({ romOff, slot: flags.slot, mapper });
-      if (addSeed({ cpuAddr, confidence: 'certain' })) summary.jsrTargetSeedCount++;
+    if (flags.subEntryPoint) {
+      if (addSeedsForRomOff(romOff)) summary.subEntrySeedCount++;
     }
     if (flags.jumpTarget) {
-      const cpuAddr = pickCpuAddrForRomOff({ romOff, slot: flags.slot, mapper });
-      if (addSeed({ cpuAddr, confidence: 'certain' })) summary.jumpTargetSeedCount++;
+      if (addSeedsForRomOff(romOff)) summary.jumpTargetSeedCount++;
     }
     prevExec = !!flags.exec;
   }
@@ -654,23 +757,23 @@ function deriveCdlOverlay({ cdlPrg, mapper, prgSize }) {
   summary.totalSeedCount = seedItems.length;
   return { seedItems, dataOnly01, summary };
 
-  function addSeed(item) {
-    if (typeof item.cpuAddr !== 'number') return false;
-    const cpu = item.cpuAddr & 0xffff;
-    if (cpu < 0x8000) return false;
-    if (seen.has(cpu)) return false;
-    seen.add(cpu);
-    seedItems.push({ cpuAddr: cpu, confidence: item.confidence || 'certain' });
-    return true;
+  function addSeedsForRomOff(romOff) {
+    const candidates = typeof mapper?.seedSitesForRomOff === 'function'
+      ? mapper.seedSitesForRomOff(romOff)
+      : [];
+    let added = false;
+    for (const site of candidates || []) {
+      if (typeof site?.cpuAddr !== 'number') continue;
+      const cpu = site.cpuAddr & 0xffff;
+      if (cpu < 0x8000) continue;
+      const fetchCtx = site.fetchCtx || mapper?.initialFetchCtx?.() || null;
+      const ctxKey = mapper?.fetchCtxKey ? mapper.fetchCtxKey(fetchCtx) : 'default';
+      const key = `${ctxKey}:${cpu}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      seedItems.push({ cpuAddr: cpu, fetchCtx, confidence: 'certain' });
+      added = true;
+    }
+    return added;
   }
-}
-
-function pickCpuAddrForRomOff({ romOff, slot, mapper }) {
-  const cpuGuess = cpuAddrForRomOffUsingSlot(romOff, slot);
-  const fetchCtx = mapper?.initialFetchCtx ? mapper.initialFetchCtx() : null;
-  const back = cpuToRomOffWithMapper(mapper, cpuGuess, fetchCtx);
-  if (back === (romOff | 0)) return cpuGuess & 0xffff;
-  const addrs = mapper.romOffToCpuAddrs ? mapper.romOffToCpuAddrs(romOff) : [];
-  if (addrs.length) return addrs[0] & 0xffff;
-  return cpuGuess & 0xffff;
 }

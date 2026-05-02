@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { hex4, hex6 } from '../util/hex.js';
+import { hex4, hex6, hexN } from '../util/hex.js';
 
 function shapeLabel(shape) {
   if (shape === 'interleaved_words') return 'interleaved (lo/hi words)';
@@ -19,23 +19,27 @@ function blockedSummary(blockedBy) {
   return blockedBy.slice(0, 2).join(', ');
 }
 
-export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, pointsOfInterest, bookmarks, labelsBySite, onNavigateToBlock, onNavigateToSite, onContextMenuBookmark }) {
+export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, pointsOfInterest, bookmarks, labelsByRomOff, onNavigateToRomSpan, onNavigateToRomOff, onContextMenuBookmark }) {
   const [openByKey, setOpenByKey] = useState(() => ({
     rom: true,
     poi: true,
     bookmarks: true,
-    jumpTables: true,
-    unresolved: true
+    jumpTables: false,
+    unresolved: false
   }));
 
   function toggle(key) {
     setOpenByKey((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
-  const jumpTables = (artifacts || []).filter((a) => a.kind === 'jumpTable');
+  const jumpTables = (artifacts || []).filter((a) => a.kind === 'jumpTable' && Number.isFinite(a.siteRomOff));
   const decodedJumpTables = jumpTables.filter((jt) => jt.status === 'decoded');
   const candidateJumpTables = jumpTables.filter((jt) => jt.status !== 'decoded');
-  const resolvedPcs = new Set(decodedJumpTables.map((jt) => jt.sitePc));
+  const resolvedRomOffs = new Set(decodedJumpTables
+    .map((jt) => jt.siteRomOff)
+    .filter((romOff) => Number.isFinite(romOff)));
+  const unresolvedIndirectJmps = (unresolvedSites || [])
+    .filter((s) => s?.kind === 'jmp_ind' && Number.isFinite(s.romOff));
   const codePctText = Number.isFinite(stats?.codePct)
     ? `${stats.codePct.toFixed(2)}%`
     : '0.00%';
@@ -125,7 +129,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
         isOpen={!!openByKey.bookmarks}
         onToggle={() => toggle('bookmarks')}
         bookmarks={bookmarks}
-        onNavigateToSite={onNavigateToSite}
+        onNavigateToRomOff={onNavigateToRomOff}
         onContextMenuBookmark={onContextMenuBookmark}
       />
 
@@ -133,7 +137,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
         isOpen={!!openByKey.poi}
         onToggle={() => toggle('poi')}
         pointsOfInterest={pointsOfInterest}
-        onNavigateToBlock={onNavigateToBlock}
+        onNavigateToRomSpan={onNavigateToRomSpan}
       />
 
       <div className="nv-art-section">
@@ -150,7 +154,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
           }}
           aria-label={openByKey.jumpTables ? 'Collapse Jump tables' : 'Expand Jump tables'}
         >
-          <div className="nv-art-title">Jump tables</div>
+          <div className="nv-art-title">Jump tables ({jumpTables.length})</div>
           <button
             type="button"
             className="nv-disclosure"
@@ -177,7 +181,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
               <button
                 key={jt.id}
                 className="nv-art-item"
-                onClick={() => onNavigateToBlock?.(jt.siteBlockId, null)}
+                onClick={() => onNavigateToRomOff?.(jt.siteRomOff)}
               >
                 <div className="nv-art-item-title">
                   JMP ({hex4(jt.ptrAddr)}) @ ${hex4(jt.sitePc)}
@@ -198,7 +202,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
                 <button
                   key={jt.id}
                   className="nv-art-item is-candidate"
-                  onClick={() => onNavigateToBlock?.(jt.siteBlockId, null)}
+                  onClick={() => onNavigateToRomOff?.(jt.siteRomOff)}
                 >
                   <div className="nv-art-item-title">
                     JMP ({hex4(jt.ptrAddr)}) @ ${hex4(jt.sitePc)}
@@ -236,7 +240,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
           }}
           aria-label={openByKey.unresolved ? 'Collapse Unresolved indirect JMP' : 'Expand Unresolved indirect JMP'}
         >
-          <div className="nv-art-title">Unresolved indirect JMP</div>
+          <div className="nv-art-title">Unresolved indirect JMP ({unresolvedIndirectJmps.length})</div>
           <button
             type="button"
             className="nv-disclosure"
@@ -252,17 +256,17 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
         </div>
         {openByKey.unresolved && (
           <div className="nv-art-body">
-        {(!unresolvedSites || unresolvedSites.length === 0) ? (
+        {unresolvedIndirectJmps.length === 0 ? (
           <div className="nv-art-muted">None.</div>
         ) : (
           <div className="nv-art-list">
-            {unresolvedSites.map((s) => {
-              const isResolved = resolvedPcs.has(s.pc);
+            {unresolvedIndirectJmps.map((s) => {
+              const isResolved = Number.isFinite(s.romOff) && resolvedRomOffs.has(s.romOff);
               return (
                 <button
-                  key={`${s.blockId}:${s.pc}`}
+                  key={`jmp-ind:${s.romOff}`}
                   className={`nv-art-item ${isResolved ? 'is-resolved' : ''}`}
-                  onClick={() => onNavigateToBlock?.(s.blockId, null)}
+                  onClick={() => onNavigateToRomOff?.(s.romOff)}
                 >
                   <div className="nv-art-item-title">
                     JMP (...) @ ${hex4(s.pc)}
@@ -288,6 +292,10 @@ function poiKindTitle(kind) {
   if (kind === 'waitsForVblank') return 'Waits for vblank';
   if (kind === 'waitsForSprite0Hit') return 'Waits for sprite 0 hit';
   if (kind === 'setsScroll') return 'Sets scroll';
+  if (kind === 'oamDma') return 'OAM DMA';
+  if (kind === 'dataTables') return 'Data table reads';
+  if (kind === 'pointerTables') return 'Pointer tables';
+  if (kind === 'monotoneTables') return 'Monotone table reads';
   if (kind === 'alignmentNops') return 'Alignment NOPs';
   return kind;
 }
@@ -300,7 +308,7 @@ function groupPois(pointsOfInterest) {
     byKind.get(kind).push(p);
   }
   // Stable-ish order
-  const order = ['setsScroll', 'alignmentNops', 'waitsForVblank', 'waitsForSprite0Hit', 'waitsForZpValue', 'waitsForInterrupt'];
+  const order = ['oamDma', 'dataTables', 'pointerTables', 'monotoneTables', 'setsScroll', 'alignmentNops', 'waitsForVblank', 'waitsForSprite0Hit', 'waitsForZpValue', 'waitsForInterrupt'];
   const keys = Array.from(byKind.keys()).sort((a, b) => {
     const ia = order.indexOf(a);
     const ib = order.indexOf(b);
@@ -310,18 +318,11 @@ function groupPois(pointsOfInterest) {
   return keys.map((k) => ({ kind: k, items: byKind.get(k) }));
 }
 
-function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToSite, onContextMenuBookmark }) {
+function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToRomOff, onContextMenuBookmark }) {
   const sorted = (bookmarks || [])
-    .filter((b) => b && typeof b.siteKey === 'string')
+    .filter((b) => b && Number.isFinite(b.romOff))
     .slice()
-    .sort((a, b) => {
-      const ar = typeof a.romOff === 'number' ? a.romOff : Number.MAX_SAFE_INTEGER;
-      const br = typeof b.romOff === 'number' ? b.romOff : Number.MAX_SAFE_INTEGER;
-      if (ar !== br) return ar - br;
-      const ac = typeof a.cpuAddr === 'number' ? a.cpuAddr : 0;
-      const bc = typeof b.cpuAddr === 'number' ? b.cpuAddr : 0;
-      return ac - bc;
-    });
+    .sort((a, b) => (a.romOff >>> 0) - (b.romOff >>> 0));
 
   return (
     <div className="nv-art-section">
@@ -360,24 +361,23 @@ function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToSite, onCon
           ) : (
             <div className="nv-art-list">
               {sorted.map((b) => {
+                const romOff = b.romOff >>> 0;
                 return (
                   <button
-                    key={b.siteKey}
+                    key={`bookmark:${romOff}`}
                     className="nv-art-item"
-                    onClick={() => onNavigateToSite?.(b)}
+                    onClick={() => onNavigateToRomOff?.(romOff)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      onContextMenuBookmark?.(b, e.clientX, e.clientY);
+                      onContextMenuBookmark?.({ romOff }, e.clientX, e.clientY);
                     }}
                   >
                     <div className="nv-art-item-title">
-                      {typeof b.cpuAddr === 'number' ? `$${hex4(b.cpuAddr)}` : '—'}
+                      ROM {hex6(romOff)}
                     </div>
                     <div className="nv-art-item-sub">
-                      {typeof b.cpuAddr === 'number'
-                        ? `${`$${hex4(b.cpuAddr)}`} · ${hex6(b.romOff)}`
-                        : hex6(b.romOff)}
+                      {hex6(romOff)}
                     </div>
                   </button>
                 );
@@ -390,7 +390,17 @@ function BookmarksSection({ isOpen, onToggle, bookmarks, onNavigateToSite, onCon
   );
 }
 
-function PointsOfInterestSection({ isOpen, onToggle, pointsOfInterest, onNavigateToBlock }) {
+function poiRomOffWidth(romOff) {
+  const value = Number.isFinite(romOff) ? (romOff >>> 0) : 0;
+  const digits = value.toString(16).length;
+  return Math.max(4, Math.min(6, digits));
+}
+
+function formatPoiRomOff(romOff) {
+  return `$${hexN(romOff >>> 0, poiRomOffWidth(romOff))}`;
+}
+
+function PointsOfInterestSection({ isOpen, onToggle, pointsOfInterest, onNavigateToRomSpan }) {
   const groups = groupPois(pointsOfInterest);
   return (
     <div className="nv-art-section">
@@ -431,17 +441,25 @@ function PointsOfInterestSection({ isOpen, onToggle, pointsOfInterest, onNavigat
                 <div key={g.kind}>
                   <div className="nv-art-subtitle">{poiKindTitle(g.kind)}</div>
                   <div className="nv-poi-list">
-                    {g.items.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className="nv-poi-addr"
-                        onClick={() => onNavigateToBlock?.(p.anchorBlockId, p.anchorRomOff, p)}
-                        title={typeof p.anchorRomOff === 'number' ? `PRG+${p.anchorRomOff.toString(16)}` : ''}
-                      >
-                        {typeof p.anchorCpuAddr === 'number' ? `$${hex4(p.anchorCpuAddr)}` : (p.anchorBlockId || '—')}
-                      </button>
-                    ))}
+                    {g.items.map((p) => {
+                      const span = p?.basis?.romOffSpan;
+                      const canNavigate = Number.isFinite(span?.start) && Number.isFinite(span?.end) && span.end > span.start;
+                      const label = canNavigate ? formatPoiRomOff(span.start) : '—';
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="nv-poi-addr"
+                          onClick={() => {
+                            if (canNavigate) onNavigateToRomSpan?.({ start: span.start >>> 0, end: span.end >>> 0 });
+                          }}
+                          disabled={!canNavigate}
+                          title={canNavigate ? label : ''}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               ))}

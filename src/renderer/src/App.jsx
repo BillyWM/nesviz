@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { BlockStack } from './components/BlockStack.jsx';
 import { ArtifactPanel } from './components/ArtifactPanel.jsx';
 import { buildViewATimelineFromBlocks } from './util/timeline.js';
-import { UNKNOWN_FETCH_CTX_KEY } from '../../shared/analyze/fetchContext.js';
+import { clampContextMenuPosition, getCurrentSelectionText } from './utils/domUtils.js';
+import { formatHexDump } from './utils/hexDumpUtils.js';
 
 function useBlocksById(blocks) {
   return useMemo(() => new Map((blocks || []).map((b) => [b.id, b])), [blocks]);
@@ -12,6 +13,15 @@ function useBlocksById(blocks) {
 function fmtCpu(addr) {
   if (typeof addr !== 'number') return '????';
   return addr.toString(16).toUpperCase().padStart(4, '0');
+}
+
+function fmtRom(addr) {
+  if (typeof addr !== 'number') return '??????';
+  return addr.toString(16).toUpperCase().padStart(6, '0');
+}
+
+function emptyVectorDestinations() {
+  return { nmi: [], reset: [], irq: [] };
 }
 
 function gapKeyFor(item) {
@@ -24,58 +34,44 @@ function gapKeyFor(item) {
   return `gap:${type}:${romStart | 0}:${romEnd | 0}`;
 }
 
-function formatHexDump(bytes) {
-  if (!Array.isArray(bytes) || bytes.length === 0) return '';
-  const lines = [];
-  for (let i = 0; i < bytes.length; i += 16) {
-    lines.push(bytes.slice(i, i + 16).map((b) => Number(b).toString(16).toUpperCase().padStart(2, '0')).join(' '));
-  }
-  return lines.join('\n');
-}
 
-function normalizeSite(site) {
-  if (!site || typeof site !== 'object') return null;
-  let siteKey = typeof site.siteKey === 'string' && site.siteKey ? site.siteKey : null;
-  const ctxKey = (typeof site.ctxKey === 'string' && site.ctxKey) ? site.ctxKey : UNKNOWN_FETCH_CTX_KEY;
-  const cpuAddr = typeof site.cpuAddr === 'number' ? (site.cpuAddr & 0xffff) : (site.cpuAddr != null ? (Number(site.cpuAddr) & 0xffff) : null);
-  const romOff = typeof site.romOff === 'number' ? (site.romOff | 0) : (site.romOff != null && Number.isFinite(Number(site.romOff)) ? (Number(site.romOff) | 0) : null);
-  if (!siteKey && typeof cpuAddr === 'number') siteKey = `${ctxKey}:${fmtCpu(cpuAddr)}`;
-  if (!siteKey && cpuAddr == null) return null;
-  return { siteKey, ctxKey, cpuAddr, romOff };
-}
 
 export default function App() {
   const [rom, setRom] = useState(null);
   const [romHash, setRomHash] = useState(null);
   const [vectors, setVectors] = useState(null);
+  const [vectorDestinations, setVectorDestinations] = useState(emptyVectorDestinations());
+  const [openVectorMenuFamily, setOpenVectorMenuFamily] = useState(null);
   const [cdl, setCdl] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [blocks, setBlocks] = useState([]);
-  const [blockAliases, setBlockAliases] = useState({});
   const [mapper, setMapper] = useState(null);
   const [stats, setStats] = useState(null);
   const [artifacts, setArtifacts] = useState([]);
   const [unresolvedSites, setUnresolvedSites] = useState([]);
   const [pointsOfInterest, setPointsOfInterest] = useState([]);
   // Highlighted POI span (in-memory only). Set when clicking a POI so its lines stay tinted when you scroll away/back.
-  const [markedPoiSpan, setMarkedPoiSpan] = useState(null);
+  const [markedRomSpan, setMarkedRomSpan] = useState(null);
   // Per-ROM user annotations.
   const [bookmarks, setBookmarks] = useState([]);
-  const [labelsBySite, setLabelsBySite] = useState({});
+  const [labelsByRomOff, setLabelsByRomOff] = useState({});
   const [labelsByAddr, setLabelsByAddr] = useState({});
   const [focusLocation, setFocusLocation] = useState(null);
   const [status, setStatus] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isLoadingCachedAnalysis, setIsLoadingCachedAnalysis] = useState(false);
   const [vsaProgress, setVsaProgress] = useState({ runId: null, totalBlocks: null, maxRatio: 0 });
 
   // Hovered code row (in-memory only). We keep this in a ref to avoid rerendering on hover.
   const hoveredLineRef = useRef(null);
+  const contextMenuRef = useRef(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [shownGapBytesByKey, setShownGapBytesByKey] = useState({});
   const [gapBytesByKey, setGapBytesByKey] = useState({});
   const [gapBytesLoadingByKey, setGapBytesLoadingByKey] = useState({});
   const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [analysisDebug, setAnalysisDebug] = useState(null);
+  const [vsaDebugModal, setVsaDebugModal] = useState(null);
 
   // Label editing modal (in-memory only).
   const [labelModal, setLabelModal] = useState(null);
@@ -85,9 +81,21 @@ export default function App() {
   const navStackRef = useRef([]);
   const stackApiRef = useRef({});
   const suppressHistoryPushRef = useRef(false);
+  const openRequestIdRef = useRef(0);
 
   const blocksById = useBlocksById(blocks);
 
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+    const rect = contextMenuRef.current.getBoundingClientRect();
+    const pos = clampContextMenuPosition(contextMenu.x, contextMenu.y, rect.width, rect.height);
+    if (pos.x === contextMenu.x && pos.y === contextMenu.y) return;
+    setContextMenu((prev) => {
+      if (!prev) return prev;
+      if (prev.x === pos.x && prev.y === pos.y) return prev;
+      return { ...prev, x: pos.x, y: pos.y };
+    });
+  }, [contextMenu]);
 
   useEffect(() => {
     // Live VSA progress streamed from the analysis worker.
@@ -114,124 +122,67 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!openVectorMenuFamily) return undefined;
+    const onPointerDown = () => setOpenVectorMenuFamily(null);
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [openVectorMenuFamily]);
 
-  const resolveBlockIdForCpuAddr = useMemo(() => {
-    // Prefer exact line/start matches when available; fall back to CPU ranges for coalesced/span-style navigation.
-    const exactByCtx = new Map();
-    const byCtx = new Map();
-    for (const b of blocks || []) {
-      const ctxId = (b?.instances?.[0]?.ctxId) || b?.ctxKey || UNKNOWN_FETCH_CTX_KEY;
-      if (!exactByCtx.has(ctxId)) exactByCtx.set(ctxId, new Map());
-      const exact = exactByCtx.get(ctxId);
 
-      const cpuStart = typeof b?.cpuStart === 'number' ? (b.cpuStart & 0xffff) : null;
-      if (cpuStart !== null && !exact.has(cpuStart)) exact.set(cpuStart, b.id);
-
-      const lines = Array.isArray(b?.lines) ? b.lines : [];
-      for (const line of lines) {
-        const lineCpu = typeof line?.cpuAddr === 'number' ? (line.cpuAddr & 0xffff) : null;
-        if (lineCpu === null) continue;
-        if (!exact.has(lineCpu)) exact.set(lineCpu, b.id);
-      }
-
-      const cpuEnd = typeof b?.cpuEnd === 'number' ? (b.cpuEnd & 0xffff) : null;
-      if (cpuStart === null || cpuEnd === null) continue;
-      if (!byCtx.has(ctxId)) byCtx.set(ctxId, []);
-      byCtx.get(ctxId).push({ cpuStart, cpuEnd, blockId: b.id });
-    }
-
-    for (const arr of byCtx.values()) {
-      arr.sort((a, b) => a.cpuStart - b.cpuStart);
-    }
-
-    function findInCtx(arr, cpuAddr) {
-      let lo = 0;
-      let hi = arr.length - 1;
-      let best = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const s = arr[mid].cpuStart;
-        if (s <= cpuAddr) {
-          best = mid;
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      if (best < 0) return null;
-      const hit = arr[best];
-      if (cpuAddr >= hit.cpuStart && cpuAddr < hit.cpuEnd) return hit.blockId;
-      return null;
-    }
-
-    return (cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) => {
-      if (typeof cpuAddr !== 'number') return null;
-      const addr = cpuAddr & 0xffff;
-      const exact = exactByCtx.get(ctxId);
-      if (exact && exact.has(addr)) return exact.get(addr);
-      const arr = byCtx.get(ctxId) || [];
-      return findInCtx(arr, addr);
-    };
-  }, [blocks]);
-
-  const canNavigateCpuAddr = useMemo(() => {
-    return (cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) => !!resolveBlockIdForCpuAddr(cpuAddr, ctxId);
-  }, [resolveBlockIdForCpuAddr]);
-
-  const resolveBlockIdForRomOff = useMemo(() => {
+  const candidateBlockIdsForRomOff = useMemo(() => {
     const ranges = (blocks || [])
       .map((b) => {
         const romStart = typeof b?.romStart === 'number' ? b.romStart : null;
         const romEnd = typeof b?.romEnd === 'number' ? b.romEnd : null;
         if (romStart === null || romEnd === null) return null;
-        return { romStart: romStart | 0, romEnd: romEnd | 0, blockId: b.id };
+        return { romStart: romStart >>> 0, romEnd: romEnd >>> 0, blockId: b.id };
       })
       .filter(Boolean)
       .sort((a, b) => a.romStart - b.romStart);
 
-    function find(romOff) {
-      let lo = 0;
-      let hi = ranges.length - 1;
-      let best = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const s = ranges[mid].romStart;
-        if (s <= romOff) {
-          best = mid;
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      if (best < 0) return null;
-      const hit = ranges[best];
-      if (romOff >= hit.romStart && romOff < hit.romEnd) return hit.blockId;
-      return null;
-    }
-
     return (romOff) => {
-      if (typeof romOff !== 'number') return null;
-      return find(romOff | 0);
+      if (!Number.isFinite(romOff)) return [];
+      const target = romOff >>> 0;
+      return ranges.filter((r) => target >= r.romStart && target < r.romEnd).map((r) => r.blockId);
     };
   }, [blocks]);
 
-  const bookmarkSiteKeySet = useMemo(() => {
+  const bookmarkRomOffSet = useMemo(() => {
     const s = new Set();
     for (const b of bookmarks || []) {
-      const key = typeof b?.siteKey === 'string' ? b.siteKey : null;
-      if (key) s.add(key);
+      const romOff = typeof b?.romOff === 'number' ? (b.romOff >>> 0) : null;
+      if (romOff !== null) s.add(romOff);
     }
     return s;
   }, [bookmarks]);
 
-  function isBookmarked(siteKey) {
-    if (typeof siteKey !== 'string' || !siteKey) return false;
-    return bookmarkSiteKeySet.has(siteKey);
+  function normalizeRomOffValue(value) {
+    const n = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return n >>> 0;
   }
 
-  function getLabelForSite(siteKey) {
-    if (typeof siteKey !== 'string' || !siteKey) return '';
-    const v = labelsBySite?.[siteKey]?.label;
+  function normalizeRomSpanValue(value) {
+    if (Number.isFinite(value)) {
+      const off = normalizeRomOffValue(value);
+      return off === null ? null : { start: off, end: off + 1 };
+    }
+    const start = normalizeRomOffValue(value?.start);
+    const end = normalizeRomOffValue(value?.end);
+    if (start === null || end === null || end <= start) return null;
+    return { start, end };
+  }
+
+  function isBookmarkedRomOff(romOff) {
+    const off = normalizeRomOffValue(romOff);
+    return off !== null && bookmarkRomOffSet.has(off);
+  }
+
+  function getLabelForRomOff(romOff) {
+    const off = normalizeRomOffValue(romOff);
+    if (off === null) return '';
+    const v = labelsByRomOff?.[String(off)]?.label;
     return typeof v === 'string' ? v : '';
   }
 
@@ -241,32 +192,32 @@ export default function App() {
     return typeof v === 'string' ? v : '';
   }
 
-  const setBookmarkAt = useCallback(async (site, set) => {
+  const setBookmarkAtRomOff = useCallback(async (romOff, set) => {
     if (!romHash) return;
-    if (!window?.nesviz?.setBookmark) return;
-    const n = normalizeSite(site);
-    if (!n) return;
-    const res = await window.nesviz.setBookmark(n, !!set);
+    if (!window?.nesviz?.setBookmarkAtRomOff) return;
+    const off = normalizeRomOffValue(romOff);
+    if (off === null) return;
+    const res = await window.nesviz.setBookmarkAtRomOff(off, !!set);
     if (res?.ok) {
       setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
     }
   }, [romHash]);
 
-  const toggleBookmarkAt = useCallback(async (site) => {
-    const n = normalizeSite(site);
-    if (!n?.siteKey) return;
-    const exists = bookmarkSiteKeySet.has(n.siteKey);
-    await setBookmarkAt(n, !exists);
-  }, [bookmarkSiteKeySet, setBookmarkAt]);
+  const toggleBookmarkAtRomOff = useCallback(async (romOff) => {
+    const off = normalizeRomOffValue(romOff);
+    if (off === null) return;
+    const exists = bookmarkRomOffSet.has(off);
+    await setBookmarkAtRomOff(off, !exists);
+  }, [bookmarkRomOffSet, setBookmarkAtRomOff]);
 
-  const setLabelAt = useCallback(async (site, label) => {
+  const setRomLabelAt = useCallback(async (romOff, label) => {
     if (!romHash) return;
-    if (!window?.nesviz?.setLabel) return;
-    const n = normalizeSite(site);
-    if (!n) return;
-    const res = await window.nesviz.setLabel(n, label);
+    if (!window?.nesviz?.setRomLabel) return;
+    const off = normalizeRomOffValue(romOff);
+    if (off === null) return;
+    const res = await window.nesviz.setRomLabel(off, label);
     if (res?.ok) {
-      setLabelsBySite(res.labels && typeof res.labels === 'object' ? res.labels : {});
+      setLabelsByRomOff(res.labels && typeof res.labels === 'object' ? res.labels : {});
     }
   }, [romHash]);
 
@@ -279,50 +230,69 @@ export default function App() {
     }
   }, [romHash]);
 
-  function navigateToCpuAddr(cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) {
-    if (typeof cpuAddr !== 'number') return;
-    const blockId = resolveBlockIdForCpuAddr(cpuAddr, ctxId);
-    if (!blockId) {
-      setStatus(`No discovered block at $${fmtCpu(cpuAddr)}.`);
-      return;
+  async function resolveDisplayAnchorForRomSpan(value) {
+    const span = normalizeRomSpanValue(value);
+    if (!span) return { ok: false, error: 'No ROM offset available.' };
+
+    const candidateIds = candidateBlockIdsForRomOff(span.start);
+    if (!candidateIds.length) {
+      return { ok: false, error: `No display block contains ROM $${fmtRom(span.start)}.` };
     }
-    setFocusLocation({ blockId, anchorRomOff: null });
+
+    for (const blockId of candidateIds) {
+      const res = await window.nesviz.getBlock(blockId);
+      if (!res?.ok || !res.block) continue;
+      const lines = Array.isArray(res.block.lines) ? res.block.lines : [];
+      for (const line of lines) {
+        if (typeof line?.romOff !== 'number') continue;
+        const lineStart = line.romOff >>> 0;
+        if (lineStart !== span.start) continue;
+        const lineLen = (typeof line.len === 'number' && line.len > 0) ? (line.len >>> 0) : 1;
+        return {
+          ok: true,
+          blockId,
+          focusRomOff: span.start,
+          span: value && typeof value === 'object' && Number.isFinite(value.end)
+            ? span
+            : { start: span.start, end: span.start + lineLen }
+        };
+      }
+    }
+
+    return { ok: false, error: `No display line starts at ROM $${fmtRom(span.start)}.` };
   }
 
-  function navigateToBlockId(blockId, anchorRomOff = null) {
-    const resolved = (blockAliases && blockAliases[blockId]) ? blockAliases[blockId] : blockId;
-    if (!resolved) return;
-    setFocusLocation({ blockId: resolved, anchorRomOff: (typeof anchorRomOff === 'number' ? anchorRomOff : null) });
+  function navigateToBlockId(blockId, focusRomOff = null) {
+    if (!blockId) return;
+    setOpenVectorMenuFamily(null);
+    setFocusLocation({ blockId, focusRomOff: (typeof focusRomOff === 'number' ? focusRomOff : null) });
   }
 
   function updateHoveredLine(lineInfo) {
     if (!lineInfo) return;
-    const siteKey = typeof lineInfo.siteKey === 'string' ? lineInfo.siteKey : null;
-    const ctxKey = (typeof lineInfo.ctxKey === 'string' && lineInfo.ctxKey) ? lineInfo.ctxKey : UNKNOWN_FETCH_CTX_KEY;
-    const romOff = typeof lineInfo.romOff === 'number' ? lineInfo.romOff : Number(lineInfo.romOff);
+    const romOff = normalizeRomOffValue(lineInfo.romOff);
+    if (romOff === null) return;
     const cpuAddr = typeof lineInfo.cpuAddr === 'number' ? lineInfo.cpuAddr : (lineInfo.cpuAddr != null ? Number(lineInfo.cpuAddr) : null);
     const labelTarget = (lineInfo.labelTarget === 'operand') ? 'operand' : 'line';
     const operandAddrRaw = (typeof lineInfo.operandAddr === 'number')
       ? lineInfo.operandAddr
       : (lineInfo.operandAddr != null ? Number(lineInfo.operandAddr) : null);
     const operandAddr = Number.isFinite(operandAddrRaw) ? (operandAddrRaw & 0xffff) : null;
-    if (!siteKey && (!Number.isFinite(cpuAddr) || cpuAddr < 0)) return;
     hoveredLineRef.current = {
-      siteKey,
-      ctxKey,
-      romOff: Number.isFinite(romOff) && romOff >= 0 ? (romOff | 0) : null,
+      romOff,
       cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null,
       labelTarget,
-      operandAddr
+      operandAddr,
+      blockId: lineInfo.blockId || null
     };
   }
 
-  function openLabelModalForSite(site) {
-    const n = normalizeSite(site);
-    if (!n) return;
-    const existing = getLabelForSite(n.siteKey);
+  function openLabelModalForRomOff(romOff) {
+    const off = normalizeRomOffValue(romOff);
+    if (off === null) return;
+    const existing = getLabelForRomOff(off);
     setLabelText(existing || '');
-    setLabelModal({ kind: 'site', site: n });
+    setLabelModal({ kind: 'rom', romOff: off });
   }
 
   function openLabelModalForAddr(cpuAddr) {
@@ -338,31 +308,26 @@ export default function App() {
     const line = hoveredLineRef.current;
     if (!line) return;
 
-    // Clamp to viewport a bit so it doesn't render off-screen.
-    const w = window.innerWidth || 0;
-    const h = window.innerHeight || 0;
-    const menuW = 210;
-    const menuH = 86;
-    const x = Math.max(8, Math.min(clientX ?? 0, Math.max(8, w - menuW - 8)));
-    const y = Math.max(8, Math.min(clientY ?? 0, Math.max(8, h - menuH - 8)));
-
-    setContextMenu({ kind: 'line', x, y, ...line });
+    const pos = clampContextMenuPosition(clientX ?? 0, clientY ?? 0, 210, 160);
+    setContextMenu({
+      kind: 'line',
+      x: pos.x,
+      y: pos.y,
+      selectedText: getCurrentSelectionText(),
+      selectedCodeText: typeof lineInfo?.selectedCodeText === 'string' ? lineInfo.selectedCodeText : '',
+      asmText: typeof lineInfo?.asmText === 'string' ? lineInfo.asmText : '',
+      ...line
+    });
   }
 
   function openBlockContextMenu(blockInfo, clientX, clientY) {
     if (!blockInfo) return;
-    const siteKey = typeof blockInfo.siteKey === 'string' ? blockInfo.siteKey : null;
-    const romOff = typeof blockInfo.romOff === 'number' ? blockInfo.romOff : Number(blockInfo.romOff);
+    const romOff = normalizeRomOffValue(blockInfo.romOff);
+    if (romOff === null) return;
     const cpuAddr = typeof blockInfo.cpuAddr === 'number' ? blockInfo.cpuAddr : (blockInfo.cpuAddr != null ? Number(blockInfo.cpuAddr) : null);
-    if (!siteKey && (!Number.isFinite(cpuAddr) || cpuAddr < 0)) return;
 
-    const w = window.innerWidth || 0;
-    const h = window.innerHeight || 0;
-    const menuW = 210;
-    const menuH = 48;
-    const x = Math.max(8, Math.min(clientX ?? 0, Math.max(8, w - menuW - 8)));
-    const y = Math.max(8, Math.min(clientY ?? 0, Math.max(8, h - menuH - 8)));
-    setContextMenu({ kind: 'block', x, y, siteKey: blockInfo.siteKey || null, ctxKey: blockInfo.ctxKey || UNKNOWN_FETCH_CTX_KEY, romOff: Number.isFinite(romOff) ? (romOff | 0) : null, cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null, blockId: blockInfo.blockId || null });
+    const pos = clampContextMenuPosition(clientX ?? 0, clientY ?? 0, 210, 120);
+    setContextMenu({ kind: 'block', x: pos.x, y: pos.y, selectedText: getCurrentSelectionText(), romOff, cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null, blockId: blockInfo.blockId || null });
   }
 
   function openGapContextMenu(gapInfo, clientX, clientY) {
@@ -370,13 +335,8 @@ export default function App() {
     const gapKey = gapKeyFor(gapInfo);
     if (!gapKey) return;
 
-    const w = window.innerWidth || 0;
-    const h = window.innerHeight || 0;
-    const menuW = 210;
-    const menuH = 48;
-    const x = Math.max(8, Math.min(clientX ?? 0, Math.max(8, w - menuW - 8)));
-    const y = Math.max(8, Math.min(clientY ?? 0, Math.max(8, h - menuH - 8)));
-    setContextMenu({ kind: 'gap', x, y, gapKey, type: gapInfo.type, romStart: gapInfo.romStart | 0, romEnd: gapInfo.romEnd | 0 });
+    const pos = clampContextMenuPosition(clientX ?? 0, clientY ?? 0, 210, 120);
+    setContextMenu({ kind: 'gap', x: pos.x, y: pos.y, selectedText: getCurrentSelectionText(), gapKey, type: gapInfo.type, romStart: gapInfo.romStart | 0, romEnd: gapInfo.romEnd | 0 });
   }
 
   async function toggleGapBytes(gapInfo) {
@@ -406,48 +366,110 @@ export default function App() {
     }
   }
 
-  function navigateToSiteWithHistory(site) {
-    const n = normalizeSite(site);
-    if (!n || typeof n.cpuAddr !== 'number') {
-      setStatus('Run static analysis first to navigate to bookmarks.');
-      return;
-    }
-    const blockId = resolveBlockIdForCpuAddr(n.cpuAddr, n.ctxKey);
-    if (!blockId) {
-      setStatus('Run static analysis first to navigate to bookmarks.');
-      return;
-    }
-    navigateToBlockIdWithHistory(blockId, n.romOff);
-  }
-
   function getTopVisibleBlockId() {
     const fn = stackApiRef?.current?.getTopVisibleBlockId;
     const id = typeof fn === 'function' ? fn() : null;
-    if (id) return (blockAliases && blockAliases[id]) ? blockAliases[id] : id;
-    return null;
+    return id || null;
   }
 
   function pushCurrentLocationForLinkClick() {
     const fromId = getTopVisibleBlockId();
     if (!fromId) return;
     const stack = navStackRef.current;
-    // Avoid consecutive duplicates.
     if (stack.length && stack[stack.length - 1] === fromId) return;
     stack.push(fromId);
   }
 
-  function navigateToCpuAddrWithHistory(cpuAddr, ctxId = UNKNOWN_FETCH_CTX_KEY) {
+  function navigateToBlockIdWithHistory(blockId, focusRomOff = null, span = null) {
     if (!suppressHistoryPushRef.current) pushCurrentLocationForLinkClick();
-    navigateToCpuAddr(cpuAddr, ctxId);
+    if (span && typeof span.start === 'number' && typeof span.end === 'number') {
+      setMarkedRomSpan({ start: span.start >>> 0, end: span.end >>> 0 });
+    }
+    navigateToBlockId(blockId, focusRomOff);
   }
 
-  function navigateToBlockIdWithHistory(blockId, anchorRomOff = null, maybePoi = null) {
-    if (!suppressHistoryPushRef.current) pushCurrentLocationForLinkClick();
-    const span = maybePoi?.basis?.romOffSpan;
-    if (span && typeof span.start === 'number' && typeof span.end === 'number') {
-      setMarkedPoiSpan({ start: span.start >>> 0, end: span.end >>> 0 });
+  async function navigateToRomSpanWithHistory(value) {
+    const anchor = await resolveDisplayAnchorForRomSpan(value);
+    if (!anchor.ok) {
+      setStatus(anchor.error || 'No display line for ROM target.');
+      return;
     }
-    navigateToBlockId(blockId, anchorRomOff);
+    navigateToBlockIdWithHistory(anchor.blockId, anchor.focusRomOff, anchor.span);
+  }
+
+  function navigateToRomOffWithHistory(romOff) {
+    void navigateToRomSpanWithHistory(romOff);
+  }
+
+
+  function getVectorDestinationsForFamily(family) {
+    return Array.isArray(vectorDestinations?.[family]) ? vectorDestinations[family] : [];
+  }
+
+  function handleVectorFooterClick(family, event) {
+    const entries = getVectorDestinationsForFamily(family);
+    if (!entries.length) return;
+    if (entries.length === 1) {
+      const entry = entries[0];
+      navigateToRomOffWithHistory(entry.romOff);
+      return;
+    }
+    event?.stopPropagation?.();
+    setOpenVectorMenuFamily((prev) => (prev === family ? null : family));
+  }
+
+  function renderVectorFooterItem(family, label, rawCpuAddr) {
+    const entries = getVectorDestinationsForFamily(family);
+    const text = `${label}: $${fmtCpu(rawCpuAddr)}`;
+    const isOpen = openVectorMenuFamily === family;
+    if (!entries.length) {
+      return <span className="nv-footer-plain" title="No discovered destination for this vector">{text}</span>;
+    }
+    if (entries.length === 1) {
+      return (
+        <button
+          type="button"
+          className="nv-footer-link"
+          onClick={() => handleVectorFooterClick(family)}
+          title="Jump to discovered vector target"
+        >
+          {text}
+        </button>
+      );
+    }
+    return (
+      <div className="nv-footer-vector">
+        <button
+          type="button"
+          className="nv-footer-link"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => handleVectorFooterClick(family, event)}
+          title="Show discovered vector destinations"
+          aria-expanded={isOpen ? 'true' : 'false'}
+        >
+          {text}
+        </button>
+        {isOpen ? (
+          <div className="nv-footer-popup" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="nv-footer-popup-title">Discovered destinations</div>
+            {entries.map((entry) => (
+              <button
+                key={`${family}:${entry.romOff}`}
+                type="button"
+                className="nv-footer-popup-link"
+                onClick={() => {
+                  setOpenVectorMenuFamily(null);
+                  navigateToRomOffWithHistory(entry.romOff);
+                }}
+                title={entry.asm || `ROM ${fmtRom(entry.romOff)}`}
+              >
+                {fmtRom(entry.romOff)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   // Navigation requests coming from the Labels secondary window.
@@ -455,25 +477,14 @@ export default function App() {
     if (!window?.nesviz?.onLabelsNavigate) return;
     const unsub = window.nesviz.onLabelsNavigate((msg) => {
       if (!msg || typeof msg !== 'object') return;
-
-      if (msg.kind === 'site') {
-        navigateToSiteWithHistory(msg);
-        return;
-      }
-
-      if (msg.kind === 'addr') {
-        const aRaw = (typeof msg.cpuAddr === 'number') ? msg.cpuAddr : Number(msg.cpuAddr);
-        if (!Number.isFinite(aRaw) || aRaw < 0) return;
-        const ctxId = (typeof msg.ctxId === 'string' && msg.ctxId) ? msg.ctxId : UNKNOWN_FETCH_CTX_KEY;
-        const a = (aRaw & 0xffff);
-        if (!canNavigateCpuAddr(a, ctxId)) return;
-        navigateToCpuAddrWithHistory(a, ctxId);
+      if (msg.kind === 'rom') {
+        navigateToRomOffWithHistory(msg.romOff);
       }
     });
     return () => {
       if (typeof unsub === 'function') unsub();
     };
-  }, [canNavigateCpuAddr, navigateToBlockIdWithHistory, navigateToCpuAddrWithHistory]);
+  }, [navigateToRomOffWithHistory]);
 
 
   function isEditableElement(el) {
@@ -495,10 +506,10 @@ export default function App() {
       // Ctrl+B toggles a bookmark on the currently hovered row (contextual add/remove).
       if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
         const line = hoveredLineRef.current;
-        if (!line || typeof line.siteKey !== 'string') return;
+        if (!line || !Number.isFinite(line.romOff)) return;
         e.preventDefault();
         e.stopPropagation();
-        toggleBookmarkAt(line);
+        void toggleBookmarkAtRomOff(line.romOff);
         return;
       }
 
@@ -541,7 +552,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
     };
-  }, [blockAliases, contextMenu, labelModal, toggleBookmarkAt]);
+  }, [contextMenu, labelModal, toggleBookmarkAtRomOff]);
 
   useEffect(() => {
     if (!window?.nesviz?.getStartupRomPath) return;
@@ -589,9 +600,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadActiveAnalysisIntoUi(statusPrefix) {
+  async function loadActiveAnalysisIntoUi(statusPrefix, opts = {}) {
+    const requestId = Number.isFinite(opts?.requestId) ? opts.requestId : null;
+    const isStale = () => requestId !== null && openRequestIdRef.current !== requestId;
+
     const tlRes = await window.nesviz.getTimeline();
+    if (isStale()) return false;
     const artRes = await window.nesviz.getArtifacts();
+    if (isStale()) return false;
 
     if (tlRes.ok) {
       console.log('NesViz getTimeline', tlRes);
@@ -628,11 +644,14 @@ export default function App() {
       setStatus(`${statusPrefix} Blocks: ${idx.length}. Rendered: ${built.length} items (${codeCount} code, ${dataCount} data).`);
       setTimeline(built);
       setBlocks(idx);
-      setBlockAliases(tlRes.blockAliases || {});
       setMapper(tlRes.mapper);
       setStats(tlRes.stats);
       setAnalysisDebug(tlRes.debug || null);
+      setVectorDestinations((tlRes.vectorDestinationsByFamily && typeof tlRes.vectorDestinationsByFamily === 'object') ? tlRes.vectorDestinationsByFamily : emptyVectorDestinations());
+      setOpenVectorMenuFamily(null);
     }
+
+    if (isStale()) return false;
 
     if (artRes.ok) {
       console.log('NesViz getArtifacts', artRes);
@@ -642,102 +661,105 @@ export default function App() {
       setMapper(artRes.mapper);
       setStats(artRes.stats);
     }
+
+    return true;
+  }
+
+  function applyOpenedRomToUi(res) {
+    setRom(res.rom);
+    setRomHash(res.romHash || null);
+    setVectors(res.vectors);
+    setVectorDestinations(emptyVectorDestinations());
+    setOpenVectorMenuFamily(null);
+    setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
+    setLabelsByRomOff((res.labels && typeof res.labels === 'object') ? res.labels : {});
+    setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
+    setContextMenu(null);
+    setLabelModal(null);
+    hoveredLineRef.current = null;
+    setShownGapBytesByKey({});
+    setGapBytesByKey({});
+    setGapBytesLoadingByKey({});
+    setAnalysisDebug(null);
+    setVsaDebugModal(null);
+
+    // New ROM => clear navigation history note: in-memory only.
+    navStackRef.current = [];
+    suppressHistoryPushRef.current = false;
+
+    setCdl(null);
+    setTimeline([]);
+    setBlocks([]);
+    setMapper(null);
+    setStats(null);
+    setArtifacts([]);
+    setUnresolvedSites([]);
+    setPointsOfInterest([]);
+    setMarkedRomSpan(null);
+    setFocusLocation(null);
+  }
+
+  async function maybeLoadCachedAnalysis(requestId) {
+    setIsLoadingCachedAnalysis(true);
+    setStatus('Loading cached analysis…');
+
+    try {
+      const cacheRes = await window.nesviz.loadActiveAnalysisCache();
+      if (openRequestIdRef.current !== requestId) return;
+
+      if (!cacheRes?.ok) {
+        setStatus(cacheRes?.error || 'Cached analysis load failed');
+        return;
+      }
+
+      if (!cacheRes.hasCachedAnalysis) {
+        setStatus('ROM loaded.');
+        return;
+      }
+
+      await loadActiveAnalysisIntoUi('Loaded cached analysis.', { requestId });
+    } catch (e) {
+      if (openRequestIdRef.current !== requestId) return;
+      setStatus(`Cached analysis load failed: ${e?.message ?? String(e)}`);
+    } finally {
+      if (openRequestIdRef.current === requestId) {
+        setIsLoadingCachedAnalysis(false);
+      }
+    }
+  }
+
+  async function handleOpenRomRequest(openFn, openFailedMessage) {
+    const requestId = (openRequestIdRef.current + 1) | 0;
+    openRequestIdRef.current = requestId;
+    setIsLoadingCachedAnalysis(false);
+    setStatus('Opening ROM…');
+
+    try {
+      const res = await openFn();
+      if (openRequestIdRef.current !== requestId) return;
+      if (!res.ok) {
+        setStatus(res.canceled ? '' : (res.error || openFailedMessage));
+        return;
+      }
+
+      applyOpenedRomToUi(res);
+      if (res.hasCachedAnalysis) {
+        void maybeLoadCachedAnalysis(requestId);
+      } else {
+        setStatus('ROM loaded.');
+      }
+    } catch (e) {
+      if (openRequestIdRef.current !== requestId) return;
+      setStatus(`Open failed: ${e?.message ?? String(e)}`);
+    }
   }
 
   async function openRom() {
-    setStatus('Opening ROM…');
-    try {
-      const res = await window.nesviz.openRom();
-      if (!res.ok) {
-        setStatus(res.canceled ? '' : (res.error || 'Open canceled'));
-        return;
-      }
-
-      setRom(res.rom);
-      setRomHash(res.romHash || null);
-      setVectors(res.vectors);
-      setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
-      setLabelsBySite((res.labels && typeof res.labels === 'object') ? res.labels : {});
-      setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
-      setContextMenu(null);
-      setLabelModal(null);
-      hoveredLineRef.current = null;
-      setShownGapBytesByKey({});
-      setGapBytesByKey({});
-      setGapBytesLoadingByKey({});
-    setAnalysisDebug(null);
-
-      // New ROM => clear navigation history note: in-memory only.
-      navStackRef.current = [];
-      suppressHistoryPushRef.current = false;
-
-      setCdl(null);
-      setTimeline([]);
-      setBlocks([]);
-      setBlockAliases({});
-      setMapper(null);
-      setStats(null);
-      setArtifacts([]);
-      setUnresolvedSites([]);
-      setPointsOfInterest([]);
-      setMarkedPoiSpan(null);
-      setFocusLocation(null);
-      if (res.hasCachedAnalysis) {
-        await loadActiveAnalysisIntoUi('Loaded cached analysis.');
-      } else {
-        setStatus('ROM loaded.');
-      }
-    } catch (e) {
-      setStatus(`Open failed: ${e?.message ?? String(e)}`);
-    }
+    await handleOpenRomRequest(() => window.nesviz.openRom(), 'Open canceled');
   }
 
   async function openRomPath(filepath) {
-    setStatus('Opening ROM…');
-    try {
-      const res = await window.nesviz.openRomPath(filepath);
-      if (!res.ok) {
-        setStatus(res.canceled ? '' : (res.error || 'Open failed'));
-        return;
-      }
-
-      setRom(res.rom);
-      setRomHash(res.romHash || null);
-      setVectors(res.vectors);
-      setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
-      setLabelsBySite((res.labels && typeof res.labels === 'object') ? res.labels : {});
-      setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
-      setContextMenu(null);
-      setLabelModal(null);
-      hoveredLineRef.current = null;
-      setShownGapBytesByKey({});
-      setGapBytesByKey({});
-      setGapBytesLoadingByKey({});
-    setAnalysisDebug(null);
-
-      // New ROM => clear navigation history.
-      navStackRef.current = [];
-      suppressHistoryPushRef.current = false;
-
-      setCdl(null);
-      setTimeline([]);
-      setBlocks([]);
-      setBlockAliases({});
-      setMapper(null);
-      setStats(null);
-      setArtifacts([]);
-      setUnresolvedSites([]);
-      setPointsOfInterest([]);
-      setFocusLocation(null);
-      setMarkedPoiSpan(null);
-      if (res.hasCachedAnalysis) {
-        await loadActiveAnalysisIntoUi('Loaded cached analysis.');
-      } else {
-        setStatus('ROM loaded.');
-      }
-    } catch (e) {
-      setStatus(`Open failed: ${e?.message ?? String(e)}`);
-    }
+    await handleOpenRomRequest(() => window.nesviz.openRomPath(filepath), 'Open failed');
   }
 
   function getContextMenuLabelTarget(cm) {
@@ -748,10 +770,53 @@ export default function App() {
       const a = cm.operandAddr & 0xffff;
       return { kind: 'addr', key: a, existing: getLabelForAddr(a) };
     }
-    if (typeof cm.siteKey === 'string' && cm.siteKey) {
-      return { kind: 'site', site: normalizeSite(cm), existing: getLabelForSite(cm.siteKey) };
+    if (Number.isFinite(cm.romOff)) {
+      const romOff = cm.romOff >>> 0;
+      return { kind: 'rom', romOff, existing: getLabelForRomOff(romOff) };
     }
     return null;
+  }
+
+  function getContextMenuCopyCodeText(cm) {
+    if (!cm || cm.kind !== 'line') return '';
+    if (typeof cm.selectedCodeText === 'string' && cm.selectedCodeText) return cm.selectedCodeText;
+    if (typeof cm.asmText === 'string' && cm.asmText) return cm.asmText;
+    return '';
+  }
+
+  async function copyTextToClipboard(text) {
+    if (!window?.nesviz?.copyText) return;
+    const payload = typeof text === 'string' ? text : String(text ?? '');
+    if (!payload) return;
+    const res = await window.nesviz.copyText(payload);
+    if (!res?.ok) throw new Error(res?.error || 'Copy failed');
+  }
+
+  async function handleContextMenuCopy(text) {
+    try {
+      await copyTextToClipboard(text);
+    } catch (e) {
+      setStatus(`Copy failed: ${e?.message ?? String(e)}`);
+    } finally {
+      setContextMenu(null);
+    }
+  }
+
+  async function showVsaForContextMenu(cm) {
+    const blockId = cm?.blockId || null;
+    if (!showDebugInfo || !blockId || !window?.nesviz?.getBlockVsaDebug) return;
+    setContextMenu(null);
+    setVsaDebugModal({ loading: true, error: '', debug: null });
+    try {
+      const res = await window.nesviz.getBlockVsaDebug(blockId);
+      if (!res?.ok) {
+        setVsaDebugModal({ loading: false, error: res?.error || 'VSA debug lookup failed', debug: null });
+        return;
+      }
+      setVsaDebugModal({ loading: false, error: '', debug: res.debug || null });
+    } catch (e) {
+      setVsaDebugModal({ loading: false, error: e?.message || String(e), debug: null });
+    }
   }
 
   async function saveLabelModal() {
@@ -762,18 +827,8 @@ export default function App() {
       return;
     }
 
-    const site = normalizeSite(labelModal.site);
-    const cpuAddr = (typeof site?.cpuAddr === 'number') ? (site.cpuAddr & 0xffff) : null;
-
-    const prevLineLabel = site?.siteKey ? getLabelForSite(site.siteKey) : '';
-    const prevAddrLabel = (cpuAddr != null) ? getLabelForAddr(cpuAddr) : '';
-
-    await setLabelAt(site, labelText);
-
-    // If this ROM-offset label is (also) acting as the address label for the line's CPU address,
-    // keep them in sync. But don't overwrite an explicitly-set address label.
-    if (cpuAddr != null && (!prevAddrLabel || prevAddrLabel === prevLineLabel)) {
-      await setAddrLabelAt(cpuAddr, labelText);
+    if (labelModal.kind === 'rom') {
+      await setRomLabelAt(labelModal.romOff, labelText);
     }
   }
 
@@ -798,6 +853,7 @@ export default function App() {
   async function runStatic() {
     if (!romHash) return;
     setIsAnalyzing(true);
+    setIsLoadingCachedAnalysis(false);
     setVsaProgress({ runId: null, totalBlocks: null, maxRatio: 0 });
     setStatus('Analyzing…');
     setShownGapBytesByKey({});
@@ -825,7 +881,7 @@ export default function App() {
     <div className="nv-app">
       <header className="nv-topbar">
         <div className="nv-top-left">
-          <button className="nv-btn" onClick={runStatic} disabled={!romHash}>Analyze (static)</button>
+          <button className="nv-btn" onClick={runStatic} disabled={!romHash || isAnalyzing}>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</button>
         </div>
         <div className="nv-top-meta">
           {rom ? (
@@ -857,12 +913,11 @@ export default function App() {
             timeline={timeline}
             blocksById={blocksById}
             focusLocation={focusLocation}
-            markedPoiSpan={markedPoiSpan}
+            markedRomSpan={markedRomSpan}
+            isLoadingCachedAnalysis={isLoadingCachedAnalysis}
             onFocused={() => setFocusLocation(null)}
-            onNavigateToCpuAddr={navigateToCpuAddrWithHistory}
-            canNavigateCpuAddr={canNavigateCpuAddr}
-            resolveBlockIdForCpuAddr={resolveBlockIdForCpuAddr}
-            labelsBySite={labelsBySite}
+            onNavigateToRomOff={navigateToRomOffWithHistory}
+            labelsByRomOff={labelsByRomOff}
             labelsByAddr={labelsByAddr}
             onHoverLine={updateHoveredLine}
             onContextMenuLine={(lineInfo, x, y) => openLineContextMenu(lineInfo, x, y)}
@@ -887,9 +942,9 @@ export default function App() {
             unresolvedSites={unresolvedSites}
             pointsOfInterest={pointsOfInterest}
             bookmarks={bookmarks}
-            labelsBySite={labelsBySite}
-            onNavigateToBlock={navigateToBlockIdWithHistory}
-            onNavigateToSite={navigateToSiteWithHistory}
+            labelsByRomOff={labelsByRomOff}
+            onNavigateToRomSpan={navigateToRomSpanWithHistory}
+            onNavigateToRomOff={navigateToRomOffWithHistory}
             onContextMenuBookmark={(b, x, y) => {
               if (!b) return;
               openLineContextMenu(b, x, y);
@@ -901,30 +956,9 @@ export default function App() {
       <footer className="nv-footer">
         {vectors ? (
           <div className="nv-footer-row">
-            <button
-              type="button"
-              className="nv-footer-link"
-              onClick={() => navigateToCpuAddrWithHistory(vectors.nmi)}
-              title="Jump to NMI vector target"
-            >
-              NMI: ${fmtCpu(vectors.nmi)}
-            </button>
-            <button
-              type="button"
-              className="nv-footer-link"
-              onClick={() => navigateToCpuAddrWithHistory(vectors.reset)}
-              title="Jump to RESET vector target"
-            >
-              RESET: ${fmtCpu(vectors.reset)}
-            </button>
-            <button
-              type="button"
-              className="nv-footer-link"
-              onClick={() => navigateToCpuAddrWithHistory(vectors.irqBrk)}
-              title="Jump to IRQ/BRK vector target"
-            >
-              IRQ/BRK: ${fmtCpu(vectors.irqBrk)}
-            </button>
+            {renderVectorFooterItem('nmi', 'NMI', vectors.nmi)}
+            {renderVectorFooterItem('reset', 'RESET', vectors.reset)}
+            {renderVectorFooterItem('irq', 'IRQ/BRK', vectors.irqBrk)}
           </div>
         ) : (
           <div className="nv-footer-row nv-footer-muted">Vectors will appear here after loading a ROM.</div>
@@ -939,6 +973,7 @@ export default function App() {
           }}
         >
           <div
+            ref={contextMenuRef}
             className="nv-contextmenu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onMouseDown={(e) => {
@@ -950,11 +985,11 @@ export default function App() {
                 type="button"
                 className="nv-contextmenu-item"
                 onClick={() => {
-                  toggleBookmarkAt(contextMenu);
+                  void toggleBookmarkAtRomOff(contextMenu.romOff);
                   setContextMenu(null);
                 }}
               >
-                {isBookmarked(contextMenu.siteKey) ? 'Remove bookmark' : 'Add bookmark'}
+                {isBookmarkedRomOff(contextMenu.romOff) ? 'Remove bookmark' : 'Add bookmark'}
               </button>
             ) : null}
 
@@ -980,7 +1015,7 @@ export default function App() {
                   className="nv-contextmenu-item"
                   onClick={() => {
                     if (lt.kind === 'addr') openLabelModalForAddr(lt.key);
-                    else openLabelModalForSite(lt.site);
+                    else openLabelModalForRomOff(lt.romOff);
                     setContextMenu(null);
                   }}
                 >
@@ -988,6 +1023,56 @@ export default function App() {
                 </button>
               );
             })()}
+
+            {typeof contextMenu.selectedText === 'string' && contextMenu.selectedText ? (
+              <button
+                type="button"
+                className="nv-contextmenu-item"
+                onClick={() => {
+                  void handleContextMenuCopy(contextMenu.selectedText);
+                }}
+              >
+                Copy
+              </button>
+            ) : null}
+
+            {(() => {
+              const copyCodeText = getContextMenuCopyCodeText(contextMenu);
+              if (!copyCodeText) return null;
+              return (
+                <button
+                  type="button"
+                  className="nv-contextmenu-item"
+                  onClick={() => {
+                    void handleContextMenuCopy(copyCodeText);
+                  }}
+                >
+                  Copy code
+                </button>
+              );
+            })()}
+
+            {showDebugInfo && contextMenu?.blockId ? (
+              <div className="nv-contextmenu-submenu">
+                <button
+                  type="button"
+                  className="nv-contextmenu-item nv-contextmenu-submenu-trigger"
+                >
+                  Debug <span aria-hidden="true">▸</span>
+                </button>
+                <div className="nv-contextmenu-submenu-panel">
+                  <button
+                    type="button"
+                    className="nv-contextmenu-item"
+                    onClick={() => {
+                      void showVsaForContextMenu(contextMenu);
+                    }}
+                  >
+                    Show VSA
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -1037,6 +1122,71 @@ export default function App() {
                   OK
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {vsaDebugModal ? (
+        <div
+          className="nv-modal-backdrop"
+          onMouseDown={() => {
+            setVsaDebugModal(null);
+          }}
+        >
+          <div
+            className="nv-modal nv-vsa-debug-modal"
+            onMouseDown={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            <div className="nv-modal-header">
+              <div>
+                <div className="nv-modal-title">VSA debug</div>
+                {vsaDebugModal.debug ? (
+                  <div className="nv-modal-subtitle">
+                    Block {vsaDebugModal.debug.displayBlockId || '—'} · {vsaDebugModal.debug.observationCount || 0} observations
+                  </div>
+                ) : null}
+              </div>
+              <div className="nv-modal-header-actions">
+                <button
+                  type="button"
+                  className="nv-btn"
+                  onClick={() => setVsaDebugModal(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="nv-vsa-debug-body">
+              {vsaDebugModal.loading ? <div className="nv-muted">Loading VSA debug…</div> : null}
+              {vsaDebugModal.error ? <div className="nv-vsa-debug-error">{vsaDebugModal.error}</div> : null}
+              {!vsaDebugModal.loading && !vsaDebugModal.error && vsaDebugModal.debug ? (
+                <div className="nv-vsa-debug-lines">
+                  {(vsaDebugModal.debug.lines || []).map((line) => (
+                    <div key={`${line.romOff}:${line.cpuAddr}`} className="nv-vsa-debug-line">
+                      <div className="nv-vsa-debug-code">
+                        <span className="nv-vsa-debug-rom">{fmtRom(line.romOff)}</span>
+                        <span className="nv-vsa-debug-cpu">${fmtCpu(line.cpuAddr)}</span>
+                        <span className="nv-vsa-debug-asm">{line.asm || ''}</span>
+                      </div>
+                      {line.entries?.length ? (
+                        <div className="nv-vsa-debug-entries">
+                          {line.entries.map((entry, idx) => (
+                            <div key={entry.id || `${line.romOff}:${idx}`} className="nv-vsa-debug-entry">
+                              <div className="nv-vsa-debug-entry-text">VSA: {entry.text}</div>
+                              {entry.details?.length ? (
+                                <div className="nv-vsa-debug-entry-details">{entry.details.join(' · ')}</div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

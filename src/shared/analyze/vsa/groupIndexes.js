@@ -1,24 +1,9 @@
-function addToArrayMap(map, key, value) {
-  let list = map.get(key);
-  if (!list) {
-    list = [];
-    map.set(key, list);
-  }
-  list.push(value);
-}
-
-function finalizeArrayMap(map) {
-  const out = {};
-  for (const [key, values] of map.entries()) {
-    out[key] = Array.from(new Set(values.map((v) => String(v)))).sort();
-  }
-  return out;
-}
+import { addToArrayMap, finalizeArrayMap } from '../../utils/collectionMapUtils.js';
 
 export function buildGroupIndexes({ groups }) {
   const groupsByAddressKey = new Map();
   const groupsByFunctionId = new Map();
-  const groupsByBlockId = new Map();
+  const groupsByRawBlockId = new Map();
   const groupsByTraceId = new Map();
   const groupsByKind = new Map();
 
@@ -27,7 +12,7 @@ export function buildGroupIndexes({ groups }) {
     addToArrayMap(groupsByKind, group.kind, groupId);
     for (const key of group.memberAddressKeys || []) addToArrayMap(groupsByAddressKey, key, groupId);
     for (const functionId of group.touchingFunctionIds || []) addToArrayMap(groupsByFunctionId, functionId, groupId);
-    for (const blockId of group.touchingBlockIds || []) addToArrayMap(groupsByBlockId, blockId, groupId);
+    for (const rawBlockId of group.touchingRawBlockIds || []) addToArrayMap(groupsByRawBlockId, rawBlockId, groupId);
     for (const traceId of group.traceIds || []) addToArrayMap(groupsByTraceId, traceId, groupId);
   }
 
@@ -35,13 +20,13 @@ export function buildGroupIndexes({ groups }) {
     version: 1,
     groupsByAddressKey: finalizeArrayMap(groupsByAddressKey),
     groupsByFunctionId: finalizeArrayMap(groupsByFunctionId),
-    groupsByBlockId: finalizeArrayMap(groupsByBlockId),
+    groupsByRawBlockId: finalizeArrayMap(groupsByRawBlockId),
     groupsByTraceId: finalizeArrayMap(groupsByTraceId),
     groupsByKind: finalizeArrayMap(groupsByKind),
     stats: {
       indexedAddressCount: groupsByAddressKey.size,
       indexedFunctionCount: groupsByFunctionId.size,
-      indexedBlockCount: groupsByBlockId.size,
+      indexedRawBlockCount: groupsByRawBlockId.size,
       indexedTraceCount: groupsByTraceId.size
     }
   };

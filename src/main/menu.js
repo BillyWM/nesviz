@@ -1,12 +1,16 @@
 import { Menu } from 'electron';
 import path from 'node:path';
 import { showRomListWindow } from './romListWindow.js';
+import { showPreferencesWindow } from './preferencesWindow.js';
 import { showLabelsWindow } from './labelsWindow.js';
 import { showTraceStreamerWindow } from './traceStreamerWindow.js';
 import { showAnalysisLogWindow } from './analysisLogWindow.js';
 import { showTuningWindow } from './tuningWindow.js';
 import { showMemoryMapWindow } from './memoryMapWindow.js';
+import { showHeatmapWindow } from './heatmapWindow.js';
 import { showGraphWindow } from './graphWindow.js';
+import { showMarkovWindow } from './markovWindow.js';
+import { showMarkovMapWindow } from './markovMapWindow.js';
 
 let currentWin = null;
 let currentRecentRoms = [];
@@ -56,12 +60,22 @@ function buildTemplate({ win, recentRoms }) {
             win.webContents.send('nesviz:menuOpenCdl');
           }
         },
+        {
+          label: 'Preferences…',
+          click: () => {
+            showPreferencesWindow();
+          }
+        },
         { type: 'separator' },
         { role: process.platform === 'darwin' ? 'close' : 'quit' }
       ]
     },
     {
       label: 'View',
+      submenu: []
+    },
+    {
+      label: 'Window',
       submenu: [
         {
           label: 'ROM List',
@@ -86,6 +100,12 @@ function buildTemplate({ win, recentRoms }) {
           label: 'Graph',
           click: () => {
             showGraphWindow();
+          }
+        },
+        {
+          label: 'Heatmap',
+          click: () => {
+            showHeatmapWindow();
           }
         }
       ]
@@ -124,6 +144,18 @@ function buildTemplate({ win, recentRoms }) {
       label: 'Tuning',
       click: () => {
         showTuningWindow();
+      }
+    },
+    {
+      label: 'Markov',
+      click: () => {
+        showMarkovWindow();
+      }
+    },
+    {
+      label: 'Markov map',
+      click: () => {
+        showMarkovMapWindow();
       }
     }
   ];

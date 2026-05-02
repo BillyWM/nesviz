@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+import { attachDevToolsShortcut, loadRendererWindow } from './utils/windowLoaderUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,47 +13,6 @@ let graphWindow = null;
 
 export function setMainWindow(win) {
   mainWindow = win;
-}
-
-function getDevRendererUrl() {
-  return (
-    process.env.VITE_DEV_SERVER_URL ||
-    process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ||
-    process.env.ELECTRON_RENDERER_URL ||
-    null
-  );
-}
-
-function loadGraphWindow(win) {
-  const devUrl = getDevRendererUrl();
-  if (devUrl) {
-    const base = devUrl.replace(/\/+$/, '');
-    win.loadURL(`${base}/graph.html`);
-    return;
-  }
-
-  const htmlPath = path.join(__dirname, '../renderer/graph.html');
-  win.loadFile(htmlPath);
-}
-
-function attachGraphDevToolsShortcut(win) {
-  const isDev = !!getDevRendererUrl();
-  if (!isDev) return;
-
-  win.webContents.on('before-input-event', (event, input) => {
-    const key = String(input?.key || '').toLowerCase();
-    const hasPrimaryModifier = process.platform === 'darwin' ? !!input?.meta : !!input?.control;
-    const hasShift = !!input?.shift;
-
-    if (hasPrimaryModifier && hasShift && key === 'i') {
-      event.preventDefault();
-      if (win.webContents.isDevToolsOpened()) {
-        win.webContents.closeDevTools();
-      } else {
-        win.webContents.openDevTools({ mode: 'detach' });
-      }
-    }
-  });
 }
 
 export function showGraphWindow() {
@@ -89,8 +49,8 @@ export function showGraphWindow() {
     graphWindow = null;
   });
 
-  attachGraphDevToolsShortcut(graphWindow);
-  loadGraphWindow(graphWindow);
+  attachDevToolsShortcut(graphWindow);
+  loadRendererWindow(graphWindow, 'graph.html', __dirname);
 }
 
 export function notifyGraphDataChanged() {

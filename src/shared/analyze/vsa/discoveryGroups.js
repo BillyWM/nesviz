@@ -1,26 +1,6 @@
-function parseAddressKey(key) {
-  const [space, addrText] = String(key || '').split(':');
-  const addr = Number.parseInt(addrText, 10);
-  if (!space || !Number.isFinite(addr)) return null;
-  return { space, addr: space === 'rom' ? (addr >>> 0) : (addr & 0xffff) };
-}
-
-function intersectNonEmpty(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length) return false;
-  const setB = new Set(b);
-  for (const item of a) {
-    if (setB.has(item)) return true;
-  }
-  return false;
-}
-
-function uniqueSortedNumeric(values) {
-  return Array.from(new Set(values)).sort((a, b) => a - b);
-}
-
-function uniqueSortedStrings(values) {
-  return Array.from(new Set(values.map((v) => String(v)))).sort();
-}
+import { parseAddressKey } from '../../utils/addressKeyUtils.js';
+import { intersectNonEmpty } from '../../utils/setMathUtils.js';
+import { uniqueSortedNumeric, uniqueSortedStrings } from '../../utils/uniqueUtils.js';
 
 function groupMaxGap(space, kind) {
   if (space === 'zp') return 1;
@@ -39,7 +19,7 @@ function buildClusterSeed(kind, fact) {
     memberAddressKeys: [fact.key],
     memberAddrs: [fact.addr],
     touchingFunctionIds: new Set((fact.allTouchingFunctionIds || fact.touchingFunctionIds || [])),
-    touchingBlockIds: new Set((fact.allTouchingBlockIds || fact.touchingBlockIds || [])),
+    touchingRawBlockIds: new Set((fact.allTouchingRawBlockIds || fact.touchingRawBlockIds || [])),
     traceIds: new Set((fact.allTraceIds || fact.traceIds || [])),
     pointerPairKeys: new Set(fact.pointerPairKeys || []),
     entryFamilies: new Set([...(fact.allReadInFamilies || fact.readInFamilies || []), ...(fact.writtenInFamilies || [])]),
@@ -51,7 +31,7 @@ function mergeFactIntoCluster(cluster, fact) {
   cluster.memberAddressKeys.push(fact.key);
   cluster.memberAddrs.push(fact.addr);
   for (const value of (fact.allTouchingFunctionIds || fact.touchingFunctionIds || [])) cluster.touchingFunctionIds.add(value);
-  for (const value of (fact.allTouchingBlockIds || fact.touchingBlockIds || [])) cluster.touchingBlockIds.add(value);
+  for (const value of (fact.allTouchingRawBlockIds || fact.touchingRawBlockIds || [])) cluster.touchingRawBlockIds.add(value);
   for (const value of (fact.allTraceIds || fact.traceIds || [])) cluster.traceIds.add(value);
   for (const value of fact.pointerPairKeys || []) cluster.pointerPairKeys.add(value);
   for (const value of (fact.allReadInFamilies || fact.readInFamilies || [])) cluster.entryFamilies.add(value);
@@ -64,7 +44,7 @@ function clusterCompatible(cluster, fact) {
   if (intersectNonEmpty(Array.from(cluster.traceIds), fact.allTraceIds || fact.traceIds || [])) return true;
   if (intersectNonEmpty(Array.from(cluster.pointerPairKeys), fact.pointerPairKeys || [])) return true;
   if (intersectNonEmpty(Array.from(cluster.touchingFunctionIds), fact.allTouchingFunctionIds || fact.touchingFunctionIds || [])) return true;
-  if (intersectNonEmpty(Array.from(cluster.touchingBlockIds), fact.allTouchingBlockIds || fact.touchingBlockIds || [])) return true;
+  if (intersectNonEmpty(Array.from(cluster.touchingRawBlockIds), fact.allTouchingRawBlockIds || fact.touchingRawBlockIds || [])) return true;
   if (intersectNonEmpty(Array.from(cluster.hardwareTargets), fact.allFlowsToIoAddrs || fact.flowsToIoAddrs || [])) return true;
   if (intersectNonEmpty(Array.from(cluster.entryFamilies), [...(fact.allReadInFamilies || fact.readInFamilies || []), ...(fact.writtenInFamilies || [])])) return true;
   return false;
@@ -136,7 +116,7 @@ function mergeClusters(clusters) {
         memberAddressKeys: [],
         memberAddrs: [],
         touchingFunctionIds: new Set(),
-        touchingBlockIds: new Set(),
+        touchingRawBlockIds: new Set(),
         traceIds: new Set(),
         pointerPairKeys: new Set(),
         entryFamilies: new Set(),
@@ -148,7 +128,7 @@ function mergeClusters(clusters) {
     for (const key of source.memberAddressKeys) acc.memberAddressKeys.push(key);
     for (const addr of source.memberAddrs) acc.memberAddrs.push(addr);
     for (const value of source.touchingFunctionIds) acc.touchingFunctionIds.add(value);
-    for (const value of source.touchingBlockIds) acc.touchingBlockIds.add(value);
+    for (const value of source.touchingRawBlockIds) acc.touchingRawBlockIds.add(value);
     for (const value of source.traceIds) acc.traceIds.add(value);
     for (const value of source.pointerPairKeys) acc.pointerPairKeys.add(value);
     for (const value of source.entryFamilies) acc.entryFamilies.add(value);
@@ -200,7 +180,7 @@ function toGroup(groupId, cluster, factsByKey) {
     memberAddrs,
     spans,
     touchingFunctionIds: uniqueSortedStrings(Array.from(cluster.touchingFunctionIds)),
-    touchingBlockIds: uniqueSortedStrings(Array.from(cluster.touchingBlockIds)),
+    touchingRawBlockIds: uniqueSortedStrings(Array.from(cluster.touchingRawBlockIds)),
     entryFamilies: uniqueSortedStrings(Array.from(cluster.entryFamilies)),
     traceIds: uniqueSortedStrings(Array.from(cluster.traceIds)),
     pointerPairKeys: uniqueSortedStrings(Array.from(cluster.pointerPairKeys)),
@@ -209,7 +189,7 @@ function toGroup(groupId, cluster, factsByKey) {
       memberAddressCount: memberAddressKeys.length,
       spanCount: spans.length,
       touchingFunctionCount: cluster.touchingFunctionIds.size,
-      touchingBlockCount: cluster.touchingBlockIds.size,
+      touchingRawBlockCount: cluster.touchingRawBlockIds.size,
       traceCount: cluster.traceIds.size,
       pointerPairCount: cluster.pointerPairKeys.size,
       hardwareTargetCount: cluster.hardwareTargets.size,

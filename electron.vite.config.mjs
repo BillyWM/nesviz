@@ -31,7 +31,10 @@ export default defineConfig({
           tracestreamer: resolve('src/renderer/tracestreamer.html'),
           analysislog: resolve('src/renderer/analysislog.html'),
           tuning: resolve('src/renderer/tuning.html'),
+          markov: resolve('src/renderer/markov.html'),
+          markovmap: resolve('src/renderer/markovmap.html'),
           memorymap: resolve('src/renderer/memorymap.html'),
+          heatmap: resolve('src/renderer/heatmap.html'),
           graph: resolve('src/renderer/graph.html')
         }
       }

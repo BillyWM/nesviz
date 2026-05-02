@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { hex4, hex6 } from '../util/hex.js';
 import { CodeLines } from './CodeLines.jsx';
-import { UNKNOWN_FETCH_CTX_KEY } from '../../../shared/analyze/fetchContext.js';
 
 function rangeText(start, end) {
   return `${hex6(start)}–${hex6(end)}`;
@@ -19,11 +18,9 @@ export function BlockCard({
   isExpanded,
   isLoading,
   isFocused,
-  markedPoiSpan,
-  onNavigateToCpuAddr,
-  canNavigateCpuAddr,
-  resolveBlockIdForCpuAddr,
-  labelsBySite,
+  markedRomSpan,
+  onNavigateToRomOff,
+  labelsByRomOff,
   labelsByAddr,
   onToggleExpanded,
   onHoverLine,
@@ -31,17 +28,15 @@ export function BlockCard({
   onContextMenuBlock
 }) {
   const inst = blockIndex?.instances?.[0];
-  const ctxId = inst?.ctxId || UNKNOWN_FETCH_CTX_KEY;
   const cpuStart = inst?.cpuStart;
   const romStart = blockIndex?.romStart ?? item.romStart;
   const romEnd = blockIndex?.romEnd ?? item.romEnd;
   const confidence = blockIndex?.confidence || 'certain';
   const pills = Array.isArray(blockIndex?.pills) ? blockIndex.pills : [];
   const firstLine = blockFull?.lines?.[0] || blockIndex?.previewLines?.[0] || null;
-  const firstSiteKey = typeof firstLine?.siteKey === 'string' ? firstLine.siteKey : null;
-  const firstCtxKey = typeof firstLine?.ctxKey === 'string' ? firstLine.ctxKey : ctxId;
-  const label = (firstSiteKey && labelsBySite && typeof labelsBySite === 'object')
-    ? (labelsBySite[firstSiteKey]?.label || '')
+  const firstRomOff = typeof firstLine?.romOff === 'number' ? (firstLine.romOff >>> 0) : (typeof romStart === 'number' ? (romStart >>> 0) : null);
+  const label = (firstRomOff !== null && labelsByRomOff && typeof labelsByRomOff === 'object')
+    ? (labelsByRomOff[String(firstRomOff)]?.label || '')
     : '';
 
   const lines = useMemo(() => {
@@ -100,7 +95,7 @@ export function BlockCard({
           if (!onContextMenuBlock) return;
           e.preventDefault();
           e.stopPropagation();
-          onContextMenuBlock({ blockId: item.blockId, siteKey: firstSiteKey, ctxKey: firstCtxKey, romOff: firstLine?.romOff ?? romStart, cpuAddr: firstLine?.cpuAddr ?? cpuStart }, e.clientX, e.clientY);
+          onContextMenuBlock({ blockId: item.blockId, romOff: firstLine?.romOff ?? romStart, cpuAddr: firstLine?.cpuAddr ?? cpuStart }, e.clientX, e.clientY);
         }}
         aria-label={isExpanded ? 'Collapse block' : 'Expand block'}
         title={isExpanded ? 'Collapse' : 'Expand'}
@@ -141,22 +136,21 @@ export function BlockCard({
             <div className="nv-inbound-addrs">
               {inboundSources.slice(0, inboundShowN).map((src, idx) => {
                 const fromCpu = src?.fromCpuAddr;
-                const fromCtxKey = typeof src?.fromCtxKey === 'string' ? src.fromCtxKey : ctxId;
-                const key = String(src?.fromSiteKey ?? src?.fromRomOff ?? fromCpu ?? idx);
-                const isLink = typeof fromCpu === 'number' && canNavigateCpuAddr(fromCpu, fromCtxKey);
+                const fromRomOff = typeof src?.fromRomOff === 'number' ? (src.fromRomOff >>> 0) : null;
+                const isLink = fromRomOff !== null;
                 return (
                   <button
-                    key={key}
+                    key={fromRomOff !== null ? `rom:${fromRomOff}` : `idx:${idx}`}
                     type="button"
                     className={`nv-inbound-addr ${isLink ? 'nv-link' : ''}`}
                     onClick={() => {
                       if (!isLink) return;
-                      onNavigateToCpuAddr(fromCpu, fromCtxKey);
+                      onNavigateToRomOff(fromRomOff);
                     }}
                     disabled={!isLink}
-                    title={typeof fromCpu === 'number' ? `Go to ${cpuText(fromCpu)}` : 'Unknown CPU address'}
+                    title={fromRomOff !== null ? `Go to ROM ${hex6(fromRomOff)}` : 'Unknown ROM offset'}
                   >
-                    {cpuText(fromCpu)}
+                    {typeof fromCpu === 'number' ? cpuText(fromCpu) : (fromRomOff !== null ? hex6(fromRomOff) : '—')}
                   </button>
                 );
               })}
@@ -189,15 +183,12 @@ export function BlockCard({
           <CodeLines
             lines={lines}
             currentBlockId={item.blockId}
-            ctxId={ctxId}
-            labelsBySite={labelsBySite}
+            labelsByRomOff={labelsByRomOff}
             labelsByAddr={labelsByAddr}
-            onNavigateToCpuAddr={onNavigateToCpuAddr}
-            canNavigateCpuAddr={canNavigateCpuAddr}
-            resolveBlockIdForCpuAddr={resolveBlockIdForCpuAddr}
+            onNavigateToRomOff={onNavigateToRomOff}
             onHoverLine={onHoverLine}
             onContextMenuLine={onContextMenuLine}
-            markedPoiSpan={markedPoiSpan}
+            markedRomSpan={markedRomSpan}
           />
 
           {lineCount > showingCount ? (

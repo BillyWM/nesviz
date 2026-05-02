@@ -5,7 +5,8 @@ import {
 } from './graphElkLayout.js'
 import {
   getMeasurementKey,
-  isFiniteNumber
+  isFiniteNumber,
+  isMeasurementComplete
 } from './graphMeasurement.js'
 
 const PROGRESS_EVERY = 200
@@ -35,6 +36,56 @@ function getMeasuredLineCenter(measurementsByNode, nodeId, rowIndex) {
 function getMeasuredPortTop(measurementsByNode, nodeId, rowIndex) {
   const center = getMeasuredLineCenter(measurementsByNode, nodeId, rowIndex)
   return isFiniteNumber(center) ? center : null
+}
+
+
+function describeEdge(edge) {
+  return `${String(edge?.id || '?')} (${String(edge?.source || '?')}:${String(edge?.sourceLineIndex ?? '?')} -> ${String(edge?.target || '?')}:${String(edge?.targetLineIndex ?? '?')})`
+}
+
+function getNodeLineCount(node) {
+  return Array.isArray(node?.lines) ? node.lines.length : 0
+}
+
+function assertValidNodeLineIndex(node, lineIndex, edge, sideRole) {
+  if (!node) {
+    throw new Error(`Graph edge ${describeEdge(edge)} references missing ${sideRole} node`)
+  }
+  if (!Number.isInteger(lineIndex)) {
+    throw new Error(`Graph edge ${describeEdge(edge)} has non-integer ${sideRole}LineIndex`)
+  }
+
+  const lineCount = getNodeLineCount(node)
+  if (lineIndex < 0 || lineIndex >= lineCount) {
+    throw new Error(`Graph edge ${describeEdge(edge)} has out-of-range ${sideRole}LineIndex ${lineIndex} for node ${String(node.id)} with ${lineCount} lines`)
+  }
+}
+
+function assertMeasurementCompleteForNode(node, measurementsByNode) {
+  const measurement = measurementsByNode.get(getMeasurementKey(node?.id))
+  if (!isMeasurementComplete(node, measurement)) {
+    throw new Error(`Deterministic graph measurement is incomplete for node ${String(node?.id || '?')}`)
+  }
+  return measurement
+}
+
+function validateGraphLayoutInputs(graphNodes, graphEdges, measurementsByNode) {
+  const nodeList = Array.isArray(graphNodes) ? graphNodes : []
+  const edgeList = Array.isArray(graphEdges) ? graphEdges : []
+  const nodesById = new Map(nodeList.map((node) => [node.id, node]))
+
+  for (const node of nodeList) {
+    assertMeasurementCompleteForNode(node, measurementsByNode)
+  }
+
+  for (const edge of edgeList) {
+    const sourceNode = nodesById.get(edge?.source) || null
+    const targetNode = nodesById.get(edge?.target) || null
+    assertValidNodeLineIndex(sourceNode, edge?.sourceLineIndex, edge, 'source')
+    assertValidNodeLineIndex(targetNode, edge?.targetLineIndex, edge, 'target')
+  }
+
+  return nodesById
 }
 
 function scanEdgeSlotCounts(graphEdges, onProgress) {
@@ -150,8 +201,7 @@ function buildPortCollections(graphNodes, graphEdges, measurementsByNode, onProg
       const sourceTop = getMeasuredPortTop(measurementsByNode, edge.source, edge.sourceLineIndex)
       const targetTop = getMeasuredPortTop(measurementsByNode, edge.target, edge.targetLineIndex)
       if (!isFiniteNumber(sourceTop) || !isFiniteNumber(targetTop)) {
-        maybeEmitLoopProgress(onProgress, 'buildPorts', index + 1, total, 'edges')
-        continue
+        throw new Error(`Graph edge ${describeEdge(edge)} could not resolve a measured per-line anchor`)
       }
 
       if (sourceNodePorts) {
@@ -179,10 +229,6 @@ function buildPortCollections(graphNodes, graphEdges, measurementsByNode, onProg
       }
     }
 
-    const bundleTargetKey = Number.isFinite(edge.targetCpuAddr)
-      ? `addr:${edge.targetCpuAddr & 0xffff}`
-      : `row:${edge.targetLineIndex}`
-
     reactFlowEdges.push({
       id: edge.id,
       source: edge.source,
@@ -199,7 +245,7 @@ function buildPortCollections(graphNodes, graphEdges, measurementsByNode, onProg
         sourceLineIndex: edge.sourceLineIndex,
         targetLineIndex: edge.targetLineIndex,
         targetCpuAddr: Number.isFinite(edge.targetCpuAddr) ? (edge.targetCpuAddr & 0xffff) : null,
-        bundleGroupKey: edge?.kind === 'fallthrough' ? null : `${edge.source}:${edge.target}:${bundleTargetKey}`,
+        bundleGroupKey: null,
         points: []
       }
     })
@@ -218,11 +264,12 @@ function buildPortCollections(graphNodes, graphEdges, measurementsByNode, onProg
 }
 
 export function prepareGraphLayout(graphNodes, graphEdges, measurementsByNode, onProgress) {
+  validateGraphLayoutInputs(graphNodes, graphEdges, measurementsByNode)
   const { portsByNode, reactFlowEdges } = buildPortCollections(graphNodes, graphEdges, measurementsByNode, onProgress)
 
   const nodeList = Array.isArray(graphNodes) ? graphNodes : []
   const baseNodes = nodeList.map((node) => {
-    const nodeMeasurement = measurementsByNode.get(getMeasurementKey(node.id))
+    const nodeMeasurement = assertMeasurementCompleteForNode(node, measurementsByNode)
     const lines = Array.isArray(node?.lines) ? node.lines : []
     const ports = portsByNode.get(node.id) || { sourcePorts: [], targetPorts: [] }
     return {

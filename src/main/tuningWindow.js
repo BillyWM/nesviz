@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+import { loadRendererWindow } from './utils/windowLoaderUtils.js';
 import { getTuningState, setTuningUpdateListener } from './tuningState.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -14,26 +15,6 @@ let removeListener = null;
 
 export function setMainWindow(win) {
   mainWindow = win;
-}
-
-function getDevRendererUrl() {
-  return (
-    process.env.VITE_DEV_SERVER_URL ||
-    process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ||
-    process.env.ELECTRON_RENDERER_URL ||
-    null
-  );
-}
-
-function loadTuningWindow(win) {
-  const devUrl = getDevRendererUrl();
-  if (devUrl) {
-    const base = devUrl.replace(/\/+$/, '');
-    win.loadURL(`${base}/tuning.html`);
-    return;
-  }
-  const htmlPath = path.join(__dirname, '../renderer/tuning.html');
-  win.loadFile(htmlPath);
 }
 
 function broadcastTuning() {
@@ -72,6 +53,6 @@ export function showTuningWindow() {
     removeListener = null;
   });
   removeListener = setTuningUpdateListener(() => broadcastTuning());
-  loadTuningWindow(tuningWindow);
+  loadRendererWindow(tuningWindow, 'tuning.html', __dirname);
   tuningWindow.webContents.once('did-finish-load', () => broadcastTuning());
 }

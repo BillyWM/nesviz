@@ -9,428 +9,266 @@ function bestOf(a, b) {
   return confRank(a) >= confRank(b) ? a : b;
 }
 
-function isControlFlowOnlyLine(ln) {
-  // For the "control-flow run" coalescer, treat only these as control-flow ops:
-  // - conditional branches
-  // - JSR
-  // - JMP absolute
-  // (Exclude JMP (ind), stop/illegal, and any unknown/undecoded lines.) 🤖
+function isContiguous(a, b) {
+  return !!a && !!b && typeof a.romEnd === 'number' && typeof b.romStart === 'number' && a.romEnd === b.romStart;
+}
+
+function blockStartSiteKey(block) {
+  if (!block || typeof block !== 'object') return null;
+
+  const firstLine = block?.lines?.[0] || null;
+  if (typeof firstLine?.siteKey === 'string' && firstLine.siteKey) return firstLine.siteKey;
+
+  const firstInstance = block?.instances?.[0] || null;
+  if (typeof firstInstance?.siteKey === 'string' && firstInstance.siteKey) return firstInstance.siteKey;
+
+  const ctxKey = (typeof firstLine?.ctxKey === 'string' && firstLine.ctxKey)
+    || (typeof block?.ctxKey === 'string' && block.ctxKey)
+    || (typeof firstInstance?.ctxId === 'string' && firstInstance.ctxId)
+    || (typeof firstInstance?.fetchCtxKey === 'string' && firstInstance.fetchCtxKey)
+    || null;
+  const cpuStart = typeof firstLine?.cpuAddr === 'number'
+    ? firstLine.cpuAddr
+    : (typeof firstInstance?.cpuStart === 'number' ? firstInstance.cpuStart : null);
+  if (typeof cpuStart !== 'number') return null;
+  return siteKeyFor(ctxKey, cpuStart & 0xffff);
+}
+
+function lastLineOf(entity) {
+  const lines = entity?.lines;
+  return Array.isArray(lines) && lines.length > 0 ? lines[lines.length - 1] : null;
+}
+
+function isHardStopLine(ln) {
   if (!ln || typeof ln !== 'object') return false;
-  const f = ln.flow;
-  if (!f || typeof f.type !== 'string') return false;
-
-  if (f.type === 'branch') return true;
-  if (f.type === 'call') return ln.mnemonic === 'JSR';
-  if (f.type === 'jump') return ln.mnemonic === 'JMP';
-  return false;
+  const mnemonic = typeof ln.mnemonic === 'string' ? ln.mnemonic.toUpperCase() : '';
+  return mnemonic === 'BRK' || mnemonic === 'JMP' || mnemonic === 'RTS' || mnemonic === 'RTI';
 }
 
-function isControlFlowOnlyBlock(b) {
-  const lines = b?.lines;
-  if (!Array.isArray(lines) || lines.length === 0) return false;
-  for (const ln of lines) {
-    if (!isControlFlowOnlyLine(ln)) return false;
-  }
-  return true;
+function isBareRtsEntity(entity) {
+  const lines = entity?.lines;
+  if (!Array.isArray(lines) || lines.length !== 1) return false;
+  const ln = lines[0];
+  return typeof ln?.mnemonic === 'string' && ln.mnemonic.toUpperCase() === 'RTS';
 }
 
-// Build a *derived* "coalesced" block view for display purposes. 🤖
-//
-// Motivation:
-// - Our true CFG builder splits blocks at every leader (branch targets, call fallthrough, etc.). 🤖
-// - That's great for analysis, but noisy for a human "read through" view. 🤖
-// - This pass merges adjacent decoded blocks in ROM order using a few conservative heuristics. 🤖
-//
-// Guarantees:
-// - We do not change the underlying analysis; we only produce a copied view. 🤖
-// - We never merge across ROM gaps (unknown/data runs). 🤖
-// - JSR calls do *not* end a display block (per project rule). 🤖
-export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESCE_CONFIG) {
-  if (!rawAnalysis) return { analysis: rawAnalysis, blockAliases: {} };
+function makeMergedEntity(leaderId, members) {
+  const memberInstances = new Map();
+  const mergedLines = [];
+  const rawBlockIds = [];
 
-  const rawBlocks = Array.isArray(rawAnalysis.blocks) ? rawAnalysis.blocks : [];
-  const sorted = [...rawBlocks].sort((a, b) => (a.romStart ?? 0) - (b.romStart ?? 0));
+  let mergedConf = 'certain';
+  let romStart = null;
+  let romEnd = null;
 
-  // Fast lookup from canonical start site key -> raw block index. 🤖
-  const startSiteKeyToIndex = new Map();
-  for (let i = 0; i < sorted.length; i++) {
-    const b = sorted[i];
-    const startSiteKey = blockStartSiteKey(b);
-    if (startSiteKey) startSiteKeyToIndex.set(startSiteKey, i);
-  }
+  for (const member of members) {
+    if (!member) continue;
+    mergedConf = bestOf(mergedConf, member.confidence || 'certain');
+    if (typeof member.romStart === 'number') romStart = romStart === null ? member.romStart : Math.min(romStart, member.romStart);
+    if (typeof member.romEnd === 'number') romEnd = romEnd === null ? member.romEnd : Math.max(romEnd, member.romEnd);
 
-  const blockAliases = {}; // rawBlockId -> coalescedBlockId (we use the group leader raw id) 🤖
-  const coalescedBlocks = [];
-
-  function isContiguous(a, b) {
-    return !!a && !!b && typeof a.romEnd === 'number' && typeof b.romStart === 'number' && a.romEnd === b.romStart;
-  }
-
-  function blockStartSiteKey(block) {
-    if (!block || typeof block !== 'object') return null;
-
-    const firstLine = block?.lines?.[0] || null;
-    if (typeof firstLine?.siteKey === 'string' && firstLine.siteKey) return firstLine.siteKey;
-
-    const firstInstance = block?.instances?.[0] || null;
-    if (typeof firstInstance?.siteKey === 'string' && firstInstance.siteKey) return firstInstance.siteKey;
-
-    const ctxKey = (typeof firstLine?.ctxKey === 'string' && firstLine.ctxKey)
-      || (typeof block?.ctxKey === 'string' && block.ctxKey)
-      || (typeof firstInstance?.ctxId === 'string' && firstInstance.ctxId)
-      || (typeof firstInstance?.fetchCtxKey === 'string' && firstInstance.fetchCtxKey)
-      || null;
-    const cpuStart = typeof firstLine?.cpuAddr === 'number'
-      ? firstLine.cpuAddr
-      : (typeof firstInstance?.cpuStart === 'number' ? firstInstance.cpuStart : null);
-    if (typeof cpuStart !== 'number') return null;
-    return siteKeyFor(ctxKey, cpuStart & 0xffff);
-  }
-
-  function countInstrFromIndexToStartSiteKey(startIndex, targetSiteKey, maxInstr) {
-    // Walk forward in ROM order, counting instructions, until we reach a block starting at targetSiteKey. 🤖
-    if (typeof targetSiteKey !== 'string' || !targetSiteKey) return { found: false, count: 0 };
-
-    let count = 0;
-    for (let i = startIndex; i < sorted.length; i++) {
-      const b = sorted[i];
-      if (i > startIndex) {
-        const prev = sorted[i - 1];
-        if (!isContiguous(prev, b)) return { found: false, count };
-      }
-      if (blockStartSiteKey(b) === targetSiteKey) {
-        return { found: true, count };
-      }
-      const n = b?.lines?.length || 0;
-      count += n;
-      if (count > maxInstr) return { found: false, count };
-    }
-    return { found: false, count };
-  }
-
-  function shouldInlineBranch(endBlock, endIndex) {
-    const last = endBlock?.lines?.[endBlock.lines.length - 1];
-    const f = last?.flow;
-    if (!f || f.type !== 'branch') return false;
-    const target = f.target;
-    const fallthrough = f.fallthrough;
-    if (typeof target !== 'number' || typeof fallthrough !== 'number') return false;
-
-    // Backward branches are commonly loop edges; keeping them inside a display block helps suppress intra-block links. 🤖
-    if (((target & 0xffff) < (fallthrough & 0xffff))) return true;
-
-    // Forward branches: inline only if the join point is close to the fallthrough path. 🤖
-    const nextIndex = endIndex + 1;
-    const fallthroughSiteKey = siteKeyFor(last?.ctxKey, fallthrough & 0xffff);
-    const targetSiteKey = siteKeyFor(last?.ctxKey, target & 0xffff);
-    const expectedFallthroughIndex = startSiteKeyToIndex.get(fallthroughSiteKey);
-    const startIndex = typeof expectedFallthroughIndex === 'number' ? expectedFallthroughIndex : nextIndex;
-    const r = countInstrFromIndexToStartSiteKey(startIndex, targetSiteKey, config.branchInlineMaxInstr | 0);
-    return !!r.found;
-  }
-
-  function isSkippableJmpStub(prevBlock, stubBlock, stubIndex) {
-    // Detect a tiny unconditional-JMP-only block that is likely part of:
-    //   Bxx join
-    //   JMP somewhere
-    // join:
-    // where the JMP can be bypassed by the near branch. 🤖
-
-    if (!prevBlock || !stubBlock) return false;
-    const prevLast = prevBlock?.lines?.[prevBlock.lines.length - 1];
-    const prevFlow = prevLast?.flow;
-    if (!prevFlow || prevFlow.type !== 'branch') return false;
-    if (typeof prevFlow.target !== 'number') return false;
-
-    // Only consider very small JMP stub blocks. 🤖
-    const stubInstrCount = stubBlock?.lines?.length || 0;
-    if (stubInstrCount <= 0 || stubInstrCount > (config.maxJmpStubInstr | 0)) return false;
-
-    const stubFirst = stubBlock?.lines?.[0];
-    const stubLast = stubBlock?.lines?.[stubBlock.lines.length - 1];
-    if (!stubFirst || !stubLast) return false;
-    if (stubFirst.mnemonic !== 'JMP') return false;
-    if (!stubLast.flow || stubLast.flow.type !== 'jump') return false;
-
-    // Check that the branch target is very near *after* the JMP stub in ROM order. 🤖
-    const afterStubIndex = stubIndex + 1;
-    const prevCtxKey = prevLast?.ctxKey;
-    const targetSiteKey = siteKeyFor(prevCtxKey, prevFlow.target & 0xffff);
-    const r = countInstrFromIndexToStartSiteKey(afterStubIndex, targetSiteKey, config.jmpSkipMaxInstr | 0);
-    return !!r.found;
-  }
-
-  function isEarlyReturnRtsBlock(prevBlock, rtsBlock, rtsIndex) {
-    // Detect a common "guard clause" shape:
-    //   ...
-    //   Bxx do_work
-    //   RTS
-    // do_work:
-    //   ...
-    //   RTS
-    //
-    // In raw CFG this often becomes:
-    //   A: ... Bxx do_work
-    //   B: RTS
-    //   C: do_work: ... RTS
-    //
-    // For the coalesced display view, keep A+B+C together so the routine reads
-    // as one contiguous unit. We only special-case RTS (not other stops) because
-    // RTS "returns" to the caller and is usually a true early-return guard. 🤖
-
-    if (!prevBlock || !rtsBlock) return false;
-
-    const prevLast = prevBlock?.lines?.[prevBlock.lines.length - 1];
-    const prevFlow = prevLast?.flow;
-    if (!prevFlow || prevFlow.type !== 'branch') return false;
-    if (typeof prevFlow.fallthrough !== 'number' || typeof prevFlow.target !== 'number') return false;
-
-    const rtsStartSiteKey = blockStartSiteKey(rtsBlock);
-    const expectedRtsSiteKey = siteKeyFor(prevLast?.ctxKey, prevFlow.fallthrough & 0xffff);
-    if (!rtsStartSiteKey || rtsStartSiteKey !== expectedRtsSiteKey) return false;
-
-    const rtsLast = rtsBlock?.lines?.[rtsBlock.lines.length - 1];
-    const rtsFlow = rtsLast?.flow;
-    if (!rtsFlow || rtsFlow.type !== 'stop') return false;
-    if (rtsLast?.mnemonic !== 'RTS') return false;
-
-    // Require that the branch target is forward and "near" after the early-return.
-    // We use the same threshold as the general forward-branch inliner for now. 🤖
-    const afterRtsIndex = rtsIndex + 1;
-    const targetSiteKey = siteKeyFor(prevLast?.ctxKey, prevFlow.target & 0xffff);
-    const r = countInstrFromIndexToStartSiteKey(afterRtsIndex, targetSiteKey, config.branchInlineMaxInstr | 0);
-    return !!r.found;
-  }
-
-  function isBareRtsBlock(block) {
-    // A "bare RTS" block is a raw CFG block containing exactly one instruction: RTS.
-    // We coalesce these into the previous display block for readability.
-    const lines = block?.lines;
-    if (!Array.isArray(lines) || lines.length !== 1) return false;
-    const ln = lines[0];
-    return ln?.mnemonic === 'RTS' && ln?.flow?.type === 'stop';
-  }
-
-  function findControlFlowRunEndIndex(startIndex) {
-    // Find the end index (inclusive) of a ROM-contiguous run of "control-flow only" blocks
-    // starting at startIndex. Only activates if the run is at least config.controlFlowRunMinInstr
-    // instructions long. This rule is applied late/last to reduce noise in dispatcher-style code. 🤖
-
-    if (!config.enableControlFlowRunCoalesce) return null;
-    const minInstr = config.controlFlowRunMinInstr | 0;
-    if (minInstr <= 0) return null;
-
-    let instrCount = 0;
-    let end = startIndex - 1;
-
-    for (let i = startIndex; i < sorted.length; i++) {
-      const b = sorted[i];
-      if (!b || !isControlFlowOnlyBlock(b)) break;
-      if (i > startIndex) {
-        const prev = sorted[i - 1];
-        if (!isContiguous(prev, b)) break;
-      }
-
-      instrCount += b?.lines?.length || 0;
-      end = i;
+    for (const rawId of member.rawBlockIds || []) {
+      rawBlockIds.push(rawId);
     }
 
-    if (instrCount >= minInstr && end >= startIndex) return end;
-    return null;
+    for (const inst of member.instances || []) {
+      const ctxId = inst?.ctxId || 'nrom';
+      const cpuStart = inst?.cpuStart;
+      if (typeof cpuStart !== 'number') continue;
+      const key = `${ctxId}:${cpuStart & 0xffff}`;
+      if (!memberInstances.has(key)) memberInstances.set(key, { ctxId, cpuStart: cpuStart & 0xffff });
+    }
+
+    for (const ln of member.lines || []) {
+      mergedLines.push({ ...ln });
+    }
   }
+
+  const cpuStart = mergedLines?.[0]?.cpuAddr;
+  const lastLine = mergedLines?.[mergedLines.length - 1];
+  const cpuEnd = lastLine && typeof lastLine.cpuAddr === 'number' && typeof lastLine.len === 'number'
+    ? ((lastLine.cpuAddr + lastLine.len) & 0xffff)
+    : null;
+
+  return {
+    id: leaderId,
+    romStart,
+    romEnd,
+    confidence: mergedConf,
+    instances: Array.from(memberInstances.values()),
+    rawBlockIds,
+    cpuStart: typeof cpuStart === 'number' ? (cpuStart & 0xffff) : null,
+    cpuEnd,
+    lines: mergedLines
+  };
+}
+
+function countInstrFromEntityIndexToStartSiteKey(entities, startIndex, targetSiteKey, maxInstr) {
+  if (!Array.isArray(entities)) return { found: false, count: 0, index: null };
+  if (typeof targetSiteKey !== 'string' || !targetSiteKey) return { found: false, count: 0, index: null };
+
+  let count = 0;
+  for (let i = startIndex; i < entities.length; i++) {
+    const entity = entities[i];
+    if (i > startIndex) {
+      const prev = entities[i - 1];
+      if (!isContiguous(prev, entity)) return { found: false, count, index: null };
+    }
+
+    if (blockStartSiteKey(entity) === targetSiteKey) {
+      return { found: true, count, index: i };
+    }
+
+    count += entity?.lines?.length || 0;
+    if (count > maxInstr) return { found: false, count, index: null };
+  }
+
+  return { found: false, count, index: null };
+}
+
+function collectBranchOverHardStopTargetIndex(entities, groupIndex, config) {
+  const entity = entities[groupIndex];
+  if (!entity || !isHardStopLine(lastLineOf(entity))) return null;
+
+  let bestTargetIndex = null;
+  const maxInstr = config.branchOverHardStopMaxInstr | 0;
+  if (maxInstr < 0) return null;
+
+  for (const ln of entity.lines || []) {
+    const flow = ln?.flow;
+    if (!flow || flow.type !== 'branch') continue;
+    if (typeof flow.target !== 'number' || typeof flow.fallthrough !== 'number') continue;
+    if ((flow.target & 0xffff) <= (flow.fallthrough & 0xffff)) continue;
+
+    const targetSiteKey = siteKeyFor(ln?.ctxKey, flow.target & 0xffff);
+    const result = countInstrFromEntityIndexToStartSiteKey(entities, groupIndex + 1, targetSiteKey, maxInstr);
+    if (!result.found || typeof result.index !== 'number') continue;
+
+    if (bestTargetIndex === null || result.index > bestTargetIndex) {
+      bestTargetIndex = result.index;
+    }
+  }
+
+  return bestTargetIndex;
+}
+
+function buildPrimaryGroups(sorted) {
+  const groups = [];
 
   for (let i = 0; i < sorted.length; ) {
     const leader = sorted[i];
-    const leaderId = leader?.id;
-    if (!leader || !leaderId) {
+    if (!leader || !leader.id) {
       i++;
       continue;
     }
 
-    const memberIds = [];
-    const memberInstances = new Map(); // key -> instance (dedupe) 🤖
-    const mergedLines = [];
-    let mergedConf = leader.confidence || 'certain';
-    let romStart = leader.romStart;
-    let romEnd = leader.romEnd;
-
+    const members = [];
     let j = i;
-    let controlFlowRunUntil = null; // end index (inclusive) of an active control-flow-only run coalesce. 🤖
     while (j < sorted.length) {
-      const b = sorted[j];
-      if (!b || !b.id) break;
-
-      memberIds.push(b.id);
-      blockAliases[b.id] = leaderId;
-      mergedConf = bestOf(mergedConf, b.confidence || 'certain');
-      romStart = Math.min(romStart, b.romStart ?? romStart);
-      romEnd = Math.max(romEnd, b.romEnd ?? romEnd);
-
-      for (const inst of b.instances || []) {
-        const ctxId = inst?.ctxId || 'nrom';
-        const cpuStart = inst?.cpuStart;
-        if (typeof cpuStart !== 'number') continue;
-        const key = `${ctxId}:${cpuStart & 0xffff}`;
-        if (!memberInstances.has(key)) memberInstances.set(key, { ctxId, cpuStart: cpuStart & 0xffff });
-      }
-
-      // Copy line objects (shallow) so the coalesced view can safely add annotations later without mutating the raw CFG. 🤖
-      for (const ln of b.lines || []) {
-        mergedLines.push({ ...ln });
-      }
-
-      const last = b.lines?.[b.lines.length - 1];
-      const f = last?.flow;
+      const block = sorted[j];
+      if (!block || !block.id) break;
+      members.push(block);
 
       const next = sorted[j + 1];
-      const canContinue = isContiguous(b, next);
-      const endsWithMapperWrite = !!last?.mapperWrite;
-      if (!canContinue || endsWithMapperWrite) {
-        j++;
-        break;
-      }
-
-      // Late-stage readability rule: if this is (or begins) a long ROM-contiguous run of nothing-but
-      // branches / JMP / JSR, keep the entire run as a single display block. 🤖
-      //
-      // When active, we ignore normal terminators (branch/jump) until the run ends. 🤖
-      if (controlFlowRunUntil !== null) {
-        if (j < controlFlowRunUntil) {
-          j++;
-          continue;
-        }
-        // End the coalesced block at the end of the run to avoid swallowing subsequent non-control-flow code. 🤖
-        if (j === controlFlowRunUntil) {
-          // Tweak: if the last instruction in the run is a JSR, treat the next block as part of the
-          // same display block. This avoids creating an artificial boundary for "call-heavy" runs,
-          // since the JSR is expected to return (usually). 🤖
-          const runLast = b?.lines?.[b.lines.length - 1];
-          const endsWithJsr = runLast?.mnemonic === 'JSR' && runLast?.flow?.type === 'call';
-          if (endsWithJsr) {
-            controlFlowRunUntil = null;
-            j++;
-            continue;
-          }
-
-          // Normally we end the coalesced block at the end of the run, but if the next block
-          // is a bare RTS (a common alignment/guard oddity), swallow it into this display block.
-          // This keeps weird "... JMP ...; RTS" / trailing-RTS artifacts from splitting the view.
-          const afterRun = sorted[j + 1];
-          if (isBareRtsBlock(afterRun)) {
-            j++;
-            continue;
-          }
-
-          j++;
-          break;
-        }
-        controlFlowRunUntil = null;
-      } else {
-        const runEnd = findControlFlowRunEndIndex(j);
-        if (typeof runEnd === 'number' && runEnd > j) {
-          controlFlowRunUntil = runEnd;
-          j++;
-          continue;
-        }
-      }
-
-      // Calls never end a coalesced block. 🤖
-      if (f?.type === 'call') {
-        j++;
-        continue;
-      }
-
-      // Conditional branches: inline only when heuristics say it's a "local" structure (or a loop). 🤖
-      if (f?.type === 'branch') {
-        if (shouldInlineBranch(b, j)) {
-          j++;
-          continue;
-        }
-        // Even if we end a display block on a branch, swallow a following bare RTS block.
-        // These often show up due to alignment or odd compiler/hand-asm artifacts.
-        const nextBlock = sorted[j + 1];
-        if (isBareRtsBlock(nextBlock)) {
-          j++;
-          continue;
-        }
-
-        j++;
-        break;
-      }
-
-      // Unconditional JMP: normally ends a display block, except for the common "branch skips a near JMP" pattern. 🤖
-      if (f?.type === 'jump') {
-        const prev = sorted[j - 1];
-        if (isSkippableJmpStub(prev, b, j)) {
-          j++;
-          continue;
-        }
-        // Same "bare RTS" swallow rule as above.
-        const nextBlock = sorted[j + 1];
-        if (isBareRtsBlock(nextBlock)) {
-          j++;
-          continue;
-        }
-
-        j++;
-        break;
-      }
-
-      // Stops / illegal opcodes / unresolved indirects end the display block. 🤖
-      if (f?.type === 'stop' || f?.type === 'illegal' || f?.type === 'jmp_ind') {
-        // Special-case: "branch skips early RTS" guard clauses should stay contiguous in the
-        // coalesced display view. If the previous block branches over this RTS to nearby code,
-        // keep merging so the whole routine reads as one unit. 🤖
-        if (f?.type === 'stop' && last?.mnemonic === 'RTS') {
-          const prev = sorted[j - 1];
-          if (isEarlyReturnRtsBlock(prev, b, j)) {
-            j++;
-            continue;
-          }
-        }
-
-        // Always coalesce a following bare-RTS block into the previous display block, regardless
-        // of what ended the previous one.
-        const nextBlock = sorted[j + 1];
-        if (isBareRtsBlock(nextBlock)) {
-          j++;
-          continue;
-        }
-
-        j++;
-        break;
-      }
-
-      // Default: keep merging straight-line regions. 🤖
+      const canContinue = isContiguous(block, next);
+      const hardStop = isHardStopLine(lastLineOf(block));
       j++;
+
+      if (!canContinue || hardStop) break;
     }
 
-    const cpuStart = mergedLines?.[0]?.cpuAddr;
-    const lastLine = mergedLines?.[mergedLines.length - 1];
-    const cpuEnd = lastLine && typeof lastLine.cpuAddr === 'number' && typeof lastLine.len === 'number'
-      ? ((lastLine.cpuAddr + lastLine.len) & 0xffff)
-      : null;
-
-    coalescedBlocks.push({
-      id: leaderId,
-      romStart,
-      romEnd,
-      confidence: mergedConf,
-      instances: Array.from(memberInstances.values()),
-      memberBlockIds: memberIds,
-      cpuStart: typeof cpuStart === 'number' ? (cpuStart & 0xffff) : null,
-      cpuEnd,
-      lines: mergedLines
-    });
-
+    groups.push(makeMergedEntity(leader.id, members.map((member) => ({
+      ...member,
+      rawBlockIds: Array.isArray(member?.rawBlockIds) && member.rawBlockIds.length ? member.rawBlockIds : [member.id]
+    }))));
     i = j;
   }
 
-  const coalescedTimeline = coalesceTimeline(rawAnalysis.timeline, blockAliases);
+  return groups;
+}
+
+function applyBranchOverHardStop(groups, config) {
+  const out = [];
+
+  for (let i = 0; i < groups.length; ) {
+    let endIndex = i;
+
+    while (endIndex < groups.length) {
+      const targetIndex = collectBranchOverHardStopTargetIndex(groups, endIndex, config);
+      if (targetIndex === null || targetIndex <= endIndex) break;
+
+      let contiguous = true;
+      for (let k = endIndex; k < targetIndex; k++) {
+        if (!isContiguous(groups[k], groups[k + 1])) {
+          contiguous = false;
+          break;
+        }
+      }
+      if (!contiguous) break;
+
+      endIndex = targetIndex;
+    }
+
+    const members = groups.slice(i, endIndex + 1);
+    out.push(makeMergedEntity(groups[i].id, members));
+    i = endIndex + 1;
+  }
+
+  return out;
+}
+
+function applyBareRtsFixedPoint(groups) {
+  let current = Array.isArray(groups) ? groups : [];
+
+  while (true) {
+    const next = [];
+    let changed = false;
+
+    for (let i = 0; i < current.length; i++) {
+      const entity = current[i];
+      if (i > 0 && isBareRtsEntity(entity) && isContiguous(next[next.length - 1], entity)) {
+        const prev = next.pop();
+        next.push(makeMergedEntity(prev.id, [prev, entity]));
+        changed = true;
+        continue;
+      }
+      next.push(entity);
+    }
+
+    if (!changed) return next;
+    current = next;
+  }
+}
+
+// Build a *derived* "coalesced" block view for display purposes. 🤖
+//
+// The display coalescer now intentionally uses a very small rule set:
+// 1. Merge through ROM-contiguous code until a hard-stop instruction (BRK/JMP/RTS/RTI). 🤖
+// 2. Allow a nearby forward branch to merge across an intervening hard-stop region. 🤖
+// 3. Repeatedly swallow bare RTS blocks into the previous display block. 🤖
+export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESCE_CONFIG) {
+  if (!rawAnalysis) return { analysis: rawAnalysis, rawToDisplayBlockIds: {} };
+
+  const rawBlocks = Array.isArray(rawAnalysis.blocks) ? rawAnalysis.blocks : [];
+  const sorted = [...rawBlocks].sort((a, b) => (a.romStart ?? 0) - (b.romStart ?? 0));
+
+  const primaryGroups = buildPrimaryGroups(sorted);
+  const branchMergedGroups = applyBranchOverHardStop(primaryGroups, config);
+  const coalescedBlocks = applyBareRtsFixedPoint(branchMergedGroups);
+
+  const rawToDisplayBlockIds = {};
+  for (const block of coalescedBlocks) {
+    for (const rawId of block.rawBlockIds || []) {
+      rawToDisplayBlockIds[rawId] = block.id;
+    }
+  }
+
+  const coalescedTimeline = coalesceTimeline(rawAnalysis.timeline, rawToDisplayBlockIds);
 
   const stats = { ...(rawAnalysis.stats || {}) };
   if (typeof stats.blockCount === 'number') {
-    stats.rawBlockCount = stats.blockCount;
+    stats.resolvedRawBlockCount = stats.blockCount;
+    if (typeof stats.rawBlockCount !== 'number') stats.rawBlockCount = stats.blockCount;
   }
   stats.blockCount = coalescedBlocks.length;
 
@@ -449,10 +287,10 @@ export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESC
     }
   };
 
-  return { analysis, blockAliases };
+  return { analysis, rawToDisplayBlockIds };
 }
 
-function coalesceTimeline(timeline, blockAliases) {
+function coalesceTimeline(timeline, rawToDisplayBlockIds) {
   const inItems = Array.isArray(timeline) ? timeline : [];
   const out = [];
 
@@ -462,7 +300,8 @@ function coalesceTimeline(timeline, blockAliases) {
       continue;
     }
 
-    const mappedId = blockAliases?.[it.blockId] || it.blockId;
+    const mappedId = rawToDisplayBlockIds?.[it.blockId] ?? null;
+    if (!mappedId) throw new Error(`Missing display block mapping for raw timeline block ${it.blockId}`);
     const prev = out[out.length - 1];
 
     if (
@@ -473,7 +312,6 @@ function coalesceTimeline(timeline, blockAliases) {
       typeof it.romStart === 'number' &&
       prev.romEnd === it.romStart
     ) {
-      // Merge consecutive code timeline items that belong to the same coalesced block. 🤖
       prev.romEnd = it.romEnd;
       prev.byteLen = (prev.romEnd - prev.romStart) | 0;
     } else {

@@ -1,9 +1,10 @@
 import { app } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { UNKNOWN_FETCH_CTX_KEY, siteKeyFor } from '../shared/analyze/fetchContext.js';
+import { normalizeCpuAddr, normalizeRomOff } from '../shared/utils/addressNormalizeUtils.js';
+import { normalizeWindowKey, normalizeWindowState } from './utils/windowStateNormalizeUtils.js';
 
-const USER_DATA_VERSION = 2;
+const USER_DATA_VERSION = 3;
 const USER_DATA_FILE = 'nesvizUserData.json';
 
 let loaded = false;
@@ -13,12 +14,6 @@ function emptyData() {
   return { version: USER_DATA_VERSION, roms: {}, recentRoms: [], windows: {} };
 }
 
-function normalizeRomOff(romOff) {
-  const r = typeof romOff === 'number' ? romOff : Number(romOff);
-  if (!Number.isFinite(r) || r < 0) return null;
-  return r | 0;
-}
-
 function normalizeLabelText(label) {
   if (label == null) return '';
   const s = String(label).trim();
@@ -26,44 +21,21 @@ function normalizeLabelText(label) {
   return s.length > 80 ? s.slice(0, 80) : s;
 }
 
-function normalizeCpuAddr(addr) {
-  const a = typeof addr === 'number' ? addr : Number(addr);
-  if (!Number.isFinite(a) || a < 0) return null;
-  return a & 0xffff;
+function normalizeRomLabelEntry(key, value) {
+  const romOff = normalizeRomOff(value?.romOff ?? key);
+  const label = normalizeLabelText(value?.label ?? value);
+  if (romOff === null || !label) return null;
+  return { romOff, label };
 }
 
-function normalizeCtxKey(ctxKey) {
-  if (ctxKey == null) return UNKNOWN_FETCH_CTX_KEY;
-  const s = String(ctxKey).trim();
-  return s || UNKNOWN_FETCH_CTX_KEY;
+function normalizeRomBookmark(bookmark) {
+  const romOff = normalizeRomOff(bookmark?.romOff ?? bookmark);
+  if (romOff === null) return null;
+  return { romOff };
 }
 
-function normalizeSiteRef(site) {
-  if (!site || typeof site !== 'object') return null;
-  const ctxKey = normalizeCtxKey(site.ctxKey);
-  const cpuAddr = normalizeCpuAddr(site.cpuAddr);
-  let siteKey = typeof site.siteKey === 'string' ? site.siteKey.trim() : '';
-  if (!siteKey && cpuAddr !== null) siteKey = siteKeyFor(ctxKey, cpuAddr);
-  if (!siteKey) return null;
-  const romOff = normalizeRomOff(site.romOff);
-  return {
-    siteKey,
-    ctxKey,
-    cpuAddr,
-    romOff
-  };
-}
-
-function normalizeSiteLabelEntry(key, value) {
-  const site = normalizeSiteRef({
-    siteKey: key,
-    ctxKey: value?.ctxKey,
-    cpuAddr: value?.cpuAddr,
-    romOff: value?.romOff
-  });
-  const label = normalizeLabelText(value?.label);
-  if (!site || !label) return null;
-  return { ...site, label };
+function keyForRomOff(romOff) {
+  return String(romOff >>> 0);
 }
 
 function getFilePath() {
@@ -93,29 +65,6 @@ async function loadFromDisk() {
   } catch {
     return emptyData();
   }
-}
-
-function normalizeWindowKey(key) {
-  if (!key) return null;
-  const k = String(key).trim();
-  if (!k) return null;
-  return k.length > 80 ? k.slice(0, 80) : k;
-}
-
-function normalizeWindowState(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const x = Number(raw.x);
-  const y = Number(raw.y);
-  const width = Number(raw.width);
-  const height = Number(raw.height);
-  const maximized = !!raw.maximized;
-
-  const out = { maximized };
-  if (Number.isFinite(x)) out.x = x | 0;
-  if (Number.isFinite(y)) out.y = y | 0;
-  if (Number.isFinite(width) && width > 0) out.width = width | 0;
-  if (Number.isFinite(height) && height > 0) out.height = height | 0;
-  return out;
 }
 
 export async function getWindowState(key) {
@@ -160,12 +109,30 @@ export async function ensureUserDataLoaded() {
   return data;
 }
 
-function normalizeBookmark(bm) {
-  return normalizeSiteRef(bm);
+function entryHasLabels(entry) {
+  return !!(entry?.labels && typeof entry.labels === 'object' && Object.keys(entry.labels).length > 0);
 }
 
-function keyForBookmark(bm) {
-  return bm.siteKey;
+function entryHasAddrLabels(entry) {
+  return !!(entry?.addrLabels && typeof entry.addrLabels === 'object' && Object.keys(entry.addrLabels).length > 0);
+}
+
+function entryHasBookmarks(entry) {
+  return Array.isArray(entry?.bookmarks) && entry.bookmarks.length > 0;
+}
+
+function pruneOrStoreRomEntry(romHash, patch) {
+  if (!data.roms) data.roms = {};
+  const current = data.roms[romHash] || {};
+  const merged = { ...current, ...patch };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value == null) delete merged[key];
+  }
+  if (!entryHasLabels(merged) && !entryHasAddrLabels(merged) && !entryHasBookmarks(merged)) {
+    delete data.roms[romHash];
+  } else {
+    data.roms[romHash] = merged;
+  }
 }
 
 export async function getBookmarksForRomHash(romHash) {
@@ -173,51 +140,30 @@ export async function getBookmarksForRomHash(romHash) {
   if (!romHash) return [];
   const entry = data.roms?.[romHash];
   const arr = Array.isArray(entry?.bookmarks) ? entry.bookmarks : [];
-  return arr.map(normalizeBookmark).filter(Boolean);
+  const byKey = new Map();
+  for (const bm of arr) {
+    const n = normalizeRomBookmark(bm);
+    if (!n) continue;
+    byKey.set(keyForRomOff(n.romOff), n);
+  }
+  return Array.from(byKey.values()).sort((a, b) => a.romOff - b.romOff);
 }
 
-export async function setBookmarkForRomHash(romHash, bm, set) {
+export async function setBookmarkForRomHash(romHash, romOff, set) {
   await ensureUserDataLoaded();
   if (!romHash) return [];
 
-  const n = normalizeBookmark(bm);
+  const n = normalizeRomBookmark({ romOff });
   if (!n) return getBookmarksForRomHash(romHash);
 
-  const entry = data.roms?.[romHash];
-  const prev = Array.isArray(entry?.bookmarks) ? entry.bookmarks : [];
-  const byKey = new Map();
-  for (const p of prev) {
-    const pn = normalizeBookmark(p);
-    if (!pn) continue;
-    byKey.set(keyForBookmark(pn), pn);
-  }
-
-  const k = keyForBookmark(n);
+  const prev = await getBookmarksForRomHash(romHash);
+  const byKey = new Map(prev.map((bm) => [keyForRomOff(bm.romOff), bm]));
+  const k = keyForRomOff(n.romOff);
   if (set) byKey.set(k, n);
   else byKey.delete(k);
 
-  const next = Array.from(byKey.values()).sort((a, b) => {
-    const ar = (a.romOff ?? Number.MAX_SAFE_INTEGER);
-    const br = (b.romOff ?? Number.MAX_SAFE_INTEGER);
-    if (ar !== br) return ar - br;
-    const ac = a.cpuAddr ?? 0;
-    const bc = b.cpuAddr ?? 0;
-    return ac - bc;
-  });
-
-  if (next.length === 0) {
-    const hasLabels = !!(entry?.labels && typeof entry.labels === 'object' && Object.keys(entry.labels).length > 0);
-    const hasAddrLabels = !!(entry?.addrLabels && typeof entry.addrLabels === 'object' && Object.keys(entry.addrLabels).length > 0);
-    if (!hasLabels && !hasAddrLabels) {
-      if (data.roms && Object.prototype.hasOwnProperty.call(data.roms, romHash)) delete data.roms[romHash];
-    } else {
-      data.roms[romHash] = { ...(data.roms[romHash] || {}) };
-      delete data.roms[romHash].bookmarks;
-    }
-  } else {
-    if (!data.roms) data.roms = {};
-    data.roms[romHash] = { ...(data.roms[romHash] || {}), bookmarks: next };
-  }
+  const next = Array.from(byKey.values()).sort((a, b) => a.romOff - b.romOff);
+  pruneOrStoreRomEntry(romHash, { bookmarks: next.length ? next : null });
 
   await saveToDisk();
   return next;
@@ -262,19 +208,7 @@ export async function setAddrLabelForRomHash(romHash, cpuAddr, label) {
   if (text) next[String(addr)] = text;
   else delete next[String(addr)];
 
-  const hasAddrLabels = Object.keys(next).length > 0;
-  const hasLabels = !!(entry?.labels && typeof entry.labels === 'object' && Object.keys(entry.labels).length > 0);
-  const hasBookmarks = Array.isArray(entry?.bookmarks) && entry.bookmarks.length > 0;
-
-  if (!hasAddrLabels && !hasLabels && !hasBookmarks) {
-    if (data.roms && Object.prototype.hasOwnProperty.call(data.roms, romHash)) delete data.roms[romHash];
-  } else {
-    if (!data.roms) data.roms = {};
-    const merged = { ...(data.roms[romHash] || {}) };
-    if (hasAddrLabels) merged.addrLabels = next;
-    else delete merged.addrLabels;
-    data.roms[romHash] = merged;
-  }
+  pruneOrStoreRomEntry(romHash, { addrLabels: Object.keys(next).length ? next : null });
 
   await saveToDisk();
   return getAddrLabelsForRomHash(romHash);
@@ -289,47 +223,28 @@ export async function getLabelsForRomHash(romHash) {
 
   const out = {};
   for (const [k, v] of Object.entries(labels)) {
-    const item = normalizeSiteLabelEntry(k, v);
+    const item = normalizeRomLabelEntry(k, v);
     if (!item) continue;
-    out[item.siteKey] = item;
+    out[keyForRomOff(item.romOff)] = item;
   }
   return out;
 }
 
-export async function setLabelForRomHash(romHash, site, label) {
+export async function setLabelForRomHash(romHash, romOff, label) {
   await ensureUserDataLoaded();
   if (!romHash) return {};
 
-  const n = normalizeSiteRef(site);
-  if (!n) return getLabelsForRomHash(romHash);
+  const off = normalizeRomOff(romOff);
+  if (off === null) return getLabelsForRomHash(romHash);
 
   const text = normalizeLabelText(label);
-  const entry = data.roms?.[romHash];
-  const prevRaw = (entry?.labels && typeof entry.labels === 'object') ? entry.labels : {};
+  const prev = await getLabelsForRomHash(romHash);
+  const next = { ...prev };
+  const k = keyForRomOff(off);
+  if (text) next[k] = { romOff: off, label: text };
+  else delete next[k];
 
-  const next = {};
-  for (const [k, v] of Object.entries(prevRaw)) {
-    const item = normalizeSiteLabelEntry(k, v);
-    if (!item) continue;
-    next[item.siteKey] = item;
-  }
-
-  if (text) next[n.siteKey] = { ...n, label: text };
-  else delete next[n.siteKey];
-
-  const hasLabels = Object.keys(next).length > 0;
-  const hasBookmarks = Array.isArray(entry?.bookmarks) && entry.bookmarks.length > 0;
-  const hasAddrLabels = !!(entry?.addrLabels && typeof entry.addrLabels === 'object' && Object.keys(entry.addrLabels).length > 0);
-
-  if (!hasLabels && !hasBookmarks && !hasAddrLabels) {
-    if (data.roms && Object.prototype.hasOwnProperty.call(data.roms, romHash)) delete data.roms[romHash];
-  } else {
-    if (!data.roms) data.roms = {};
-    const merged = { ...(data.roms[romHash] || {}) };
-    if (hasLabels) merged.labels = next;
-    else delete merged.labels;
-    data.roms[romHash] = merged;
-  }
+  pruneOrStoreRomEntry(romHash, { labels: Object.keys(next).length ? next : null });
 
   await saveToDisk();
   return getLabelsForRomHash(romHash);

@@ -1,0 +1,188 @@
+:root {
+  --heatmap-cell-size: 16px;
+  --heatmap-bg: #10203a;
+  --heatmap-bg-deep: #0b1730;
+  --heatmap-panel-bg: rgba(10, 24, 50, 0.94);
+  --heatmap-panel-bg-strong: rgba(10, 24, 50, 0.985);
+  --heatmap-text: #deebff;
+  --heatmap-text-strong: #f2f7ff;
+  --heatmap-text-muted: #95a8c8;
+  --heatmap-border: rgba(255, 255, 255, 0.12);
+  --heatmap-grid-base: rgba(255, 255, 255, 0.035);
+  --heatmap-grid-line: rgba(255, 255, 255, 0.08);
+  --heatmap-grid-bg: #142746;
+  --heatmap-warning: #e0b676;
+  --heatmap-code-outline: #000000;
+}
+
+.heatmap-window {
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: linear-gradient(180deg, var(--heatmap-bg) 0%, var(--heatmap-bg-deep) 100%);
+  color: var(--heatmap-text);
+}
+
+.heatmap-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--heatmap-panel-bg-strong);
+  border-bottom: 1px solid var(--heatmap-border);
+  backdrop-filter: blur(4px);
+}
+
+.heatmap-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--heatmap-text-strong);
+}
+
+.heatmap-header-subtitle {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--heatmap-text-muted);
+}
+
+.heatmap-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.heatmap-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--heatmap-text-muted);
+}
+
+.heatmap-control select {
+  min-width: 104px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(9, 20, 44, 0.96);
+  color: var(--heatmap-text-strong);
+  appearance: none;
+}
+
+.heatmap-control select option {
+  background: #0d1a33;
+  color: var(--heatmap-text-strong);
+}
+
+.heatmap-scroller {
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.heatmap-status {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--heatmap-warning);
+}
+
+.heatmap-root {
+  min-width: calc((var(--heatmap-grid-cell-count, 0) * var(--heatmap-cell-size)) + 110px);
+}
+
+.heatmap-section {
+  margin-top: var(--heatmap-section-top, 0px);
+}
+
+.heatmap-section-title {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heatmap-text-strong);
+}
+
+.heatmap-region-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.heatmap-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.heatmap-row {
+  display: flex;
+  align-items: stretch;
+  height: var(--heatmap-cell-size);
+}
+
+.heatmap-row-label {
+  width: 88px;
+  height: var(--heatmap-cell-size);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  padding-right: 10px;
+  font-size: 11px;
+  color: var(--heatmap-text-muted);
+  text-align: right;
+  user-select: none;
+  line-height: 1;
+}
+
+.heatmap-row-grid {
+  position: relative;
+  width: calc(var(--heatmap-row-cell-count, 0) * var(--heatmap-cell-size));
+  height: var(--heatmap-cell-size);
+  flex: 0 0 auto;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--heatmap-grid-base) 0,
+    var(--heatmap-grid-base) calc(var(--heatmap-cell-size) - 1px),
+    var(--heatmap-grid-line) calc(var(--heatmap-cell-size) - 1px),
+    var(--heatmap-grid-line) var(--heatmap-cell-size)
+  );
+  background-size: var(--heatmap-cell-size) 100%;
+  background-color: var(--heatmap-grid-bg);
+  overflow: hidden;
+}
+
+.heatmap-cell {
+  position: absolute;
+  left: calc(var(--heatmap-cell-index, 0) * var(--heatmap-cell-size));
+  top: 0;
+  width: var(--heatmap-cell-size);
+  height: var(--heatmap-cell-size);
+}
+
+.heatmap-overlay-span {
+  position: absolute;
+  left: calc(var(--heatmap-overlay-start-cell, 0) * var(--heatmap-cell-size));
+  top: 0;
+  width: calc(var(--heatmap-overlay-cell-span, 0) * var(--heatmap-cell-size));
+  height: var(--heatmap-cell-size);
+  box-sizing: border-box;
+  border: 1px dashed var(--heatmap-code-outline);
+  border-top-width: 1px;
+  border-bottom-width: 1px;
+  background: transparent;
+  pointer-events: none;
+}
+
+.heatmap-gap {
+  height: 18px;
+}
+
+.heatmap-empty-view {
+  min-height: 100vh;
+  background: linear-gradient(180deg, var(--heatmap-bg) 0%, var(--heatmap-bg-deep) 100%);
+  color: var(--heatmap-text);
+  padding: 16px;
+}

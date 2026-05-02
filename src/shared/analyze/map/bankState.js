@@ -1,9 +1,4 @@
-function dedupeSorted(values) {
-  return Array.from(new Set((Array.isArray(values) ? values : [])
-    .map((v) => (typeof v === 'number' ? v : Number(v)))
-    .filter((v) => Number.isFinite(v) && v >= 0)
-    .map((v) => v | 0))).sort((a, b) => a - b);
-}
+import { dedupeSorted } from '../../utils/uniqueUtils.js';
 
 export function unknownBankState() {
   return { kind: 'unknown' };

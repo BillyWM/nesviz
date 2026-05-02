@@ -1,17 +1,11 @@
 import { hex2, hex4 } from '../../cpu6502/fmt.js';
+import { readPrgAtCpu } from '../../utils/romReadUtils.js';
 import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
 import { vEnumerate } from '../vsa/value.js';
 
 // Extract jump-table "signals" (objective facts) from provenance/state at an indirect JMP site. 🤖
 //
 // This file intentionally contains no confidence decisions; it only reports what we can prove/observe. 🤖
-
-function readPrgAtCpu(prgBytes, mapper, cpuAddr, fetchCtx = null) {
-  const romOff = cpuToRomOffWithMapper(mapper, cpuAddr, fetchCtx);
-  if (romOff == null) return null;
-  if (romOff < 0 || romOff >= prgBytes.length) return null;
-  return prgBytes[romOff] & 0xff;
-}
 
 function isReadRom8(n) {
   return n && n.kind === 'ReadRom8';

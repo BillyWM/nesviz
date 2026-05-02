@@ -1,6 +1,4 @@
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value))
-}
+import { clamp } from '../../../shared/utils/numberUtils.js';
 
 function compareNodes(a, b) {
   const aRom = Number.isFinite(a?.data?.romStart) ? a.data.romStart : Number.MAX_SAFE_INTEGER

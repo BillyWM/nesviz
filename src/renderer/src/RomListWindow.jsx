@@ -1,14 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import FolderButton from './components/FolderButton.jsx';
+import RefreshButton from './components/RefreshButton.jsx';
+import { formatFolderPathsSubtitle, normalizeFolderPathsValue } from './utils/folderPathDisplayUtils.js';
+
+const DEFAULT_FILTER_STATE = Object.freeze({
+  nameQuery: ''
+});
+
+const DEFAULT_SORT = Object.freeze({
+  key: null,
+  dir: 'asc'
+});
 
 export default function RomListWindow() {
-  const [folderPath, setFolderPath] = useState('');
+  const [folderPaths, setFolderPaths] = useState([]);
   const [items, setItems] = useState([]);
   const [scanMeta, setScanMeta] = useState(null);
   const [status, setStatus] = useState('');
+  const [filterState, setFilterState] = useState(() => ({ ...DEFAULT_FILTER_STATE }));
 
   // Sort state: one column at a time; null key means scan order.
-  const [sort, setSort] = useState({ key: null, dir: 'asc' });
+  const [sort, setSort] = useState(() => ({ ...DEFAULT_SORT }));
   const activeScanIdRef = useRef(null);
+  const romListUiStateReadyRef = useRef(false);
 
   const sortedItems = useMemo(() => {
     const key = sort?.key;
@@ -46,6 +60,31 @@ export default function RomListWindow() {
     return out;
   }, [items, sort]);
 
+  const activeFilters = useMemo(() => {
+    const filters = [];
+    const rawNameQuery = filterState?.nameQuery ?? '';
+    const nameQuery = rawNameQuery.trim();
+
+    if (nameQuery) {
+      const needle = nameQuery.toLowerCase();
+      filters.push({
+        key: 'nameQuery',
+        type: 'text',
+        value: nameQuery,
+        matches(item) {
+          return (item?.filename ?? '').toString().toLowerCase().includes(needle);
+        }
+      });
+    }
+
+    return filters;
+  }, [filterState]);
+
+  const visibleItems = useMemo(() => {
+    if (!activeFilters.length) return sortedItems;
+    return sortedItems.filter((item) => activeFilters.every((filter) => filter.matches(item)));
+  }, [activeFilters, sortedItems]);
+
   const toggleSort = useCallback((key) => {
     setSort((prev) => {
       if (!prev || prev.key !== key) return { key, dir: 'asc' };
@@ -54,7 +93,8 @@ export default function RomListWindow() {
   }, []);
 
   const applyCache = useCallback((cache) => {
-    if (!cache || !cache.ok || !cache.hasCache || !cache.folderPath) return false;
+    const nextFolderPaths = normalizeFolderPathsValue(cache?.folderPaths);
+    if (!cache || !cache.ok || !cache.hasCache || !nextFolderPaths.length) return false;
 
     const nextItems = Array.isArray(cache.items) ? cache.items : [];
     const meta = cache.meta || {};
@@ -63,10 +103,10 @@ export default function RomListWindow() {
     const foundCount = Number.isFinite(meta.foundCount) ? meta.foundCount : nextItems.length;
     const errorCount = Number.isFinite(meta.errorCount) ? meta.errorCount : 0;
 
-    setFolderPath(cache.folderPath);
+    setFolderPaths(nextFolderPaths);
     setItems(nextItems);
     setScanMeta({
-      folderPath: cache.folderPath,
+      folderPaths: nextFolderPaths,
       totalCount,
       scannedCount,
       foundCount,
@@ -86,7 +126,7 @@ export default function RomListWindow() {
         const cache = await window.nesviz?.getRomFolderCache?.();
         if (canceled) return;
         if (!applyCache(cache)) {
-          setFolderPath('');
+          setFolderPaths([]);
           setItems([]);
           setScanMeta(null);
         }
@@ -99,13 +139,56 @@ export default function RomListWindow() {
     };
   }, [applyCache]);
 
+  useEffect(() => {
+    let canceled = false;
+    (async () => {
+      try {
+        const savedUiState = await window.nesviz?.getRomListUiState?.();
+        if (canceled) return;
+
+        if (savedUiState?.filterState && typeof savedUiState.filterState === 'object') {
+          setFilterState({
+            ...DEFAULT_FILTER_STATE,
+            ...savedUiState.filterState
+          });
+        }
+
+        if (savedUiState?.sort && typeof savedUiState.sort === 'object') {
+          setSort({
+            ...DEFAULT_SORT,
+            ...savedUiState.sort,
+            dir: savedUiState.sort?.dir === 'desc' ? 'desc' : 'asc'
+          });
+        }
+      } catch {
+        // Ignore transient UI state load failures.
+      } finally {
+        if (!canceled) romListUiStateReadyRef.current = true;
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!romListUiStateReadyRef.current) return;
+    void window.nesviz?.setRomListUiState?.({
+      filterState,
+      sort
+    });
+  }, [filterState, sort]);
+
   // Streamed scan events from the main process.
   useEffect(() => {
     if (!window?.nesviz?.onRomFolderScan) return;
     const unsub = window.nesviz.onRomFolderScan((msg) => {
       if (!msg || msg.scanId !== activeScanIdRef.current) return;
       if (msg.type === 'start') {
-        setScanMeta({ ...msg, scannedCount: 0, foundCount: 0, errorCount: 0 });
+        const nextFolderPaths = normalizeFolderPathsValue(msg.folderPaths);
+        if (nextFolderPaths.length) setFolderPaths(nextFolderPaths);
+        setScanMeta({ ...msg, folderPaths: nextFolderPaths, scannedCount: 0, foundCount: 0, errorCount: 0 });
         return;
       }
       if (msg.type === 'batch') {
@@ -142,14 +225,15 @@ export default function RomListWindow() {
     };
   }, []);
 
-  const startScan = useCallback(async (nextFolderPath, opts = null) => {
-    if (!nextFolderPath) return;
-    setFolderPath(nextFolderPath);
+  const startScan = useCallback(async (nextFolderPathsInput, opts = null) => {
+    const nextFolderPaths = normalizeFolderPathsValue(nextFolderPathsInput);
+    if (!nextFolderPaths.length) return;
+    setFolderPaths(nextFolderPaths);
     setItems([]);
-    setScanMeta({ folderPath: nextFolderPath, totalCount: 0, scannedCount: 0, foundCount: 0, errorCount: 0, done: false });
+    setScanMeta({ folderPaths: nextFolderPaths, totalCount: 0, scannedCount: 0, foundCount: 0, errorCount: 0, done: false });
 
     try {
-      const scan = await window.nesviz?.startRomFolderScan?.(nextFolderPath, opts || null);
+      const scan = await window.nesviz?.startRomFolderScan?.(nextFolderPaths, opts || null);
       if (!scan?.ok) {
         const err = scan?.error || 'Scan failed';
         setStatus(err);
@@ -157,8 +241,11 @@ export default function RomListWindow() {
         activeScanIdRef.current = null;
         return;
       }
+      if (Array.isArray(scan.folderPaths) && scan.folderPaths.length) {
+        setFolderPaths(normalizeFolderPathsValue(scan.folderPaths));
+      }
       activeScanIdRef.current = scan.scanId;
-      setStatus('Scanning folder…');
+      setStatus('Scanning folders…');
     } catch (e) {
       setStatus(`Scan failed: ${e?.message ?? String(e)}`);
       setScanMeta((prev) => ({ ...(prev || {}), error: 'Scan failed', done: true }));
@@ -167,23 +254,23 @@ export default function RomListWindow() {
   }, []);
 
   const selectFolderAndScan = useCallback(async () => {
-    setStatus('Selecting ROM folder…');
+    setStatus('Selecting ROM folders…');
     try {
       const sel = await window.nesviz?.selectRomFolder?.();
       if (!sel?.ok) {
         setStatus(sel?.canceled ? '' : (sel?.error || 'Select canceled'));
         return;
       }
-      await startScan(sel.folderPath, { force: false });
+      await startScan(sel.folderPaths, { force: false });
     } catch (e) {
       setStatus(`Folder select failed: ${e?.message ?? String(e)}`);
     }
   }, [startScan]);
 
   const refresh = useCallback(async () => {
-    if (!folderPath) return;
-    await startScan(folderPath, { force: true });
-  }, [folderPath, startScan]);
+    if (!folderPaths.length) return;
+    await startScan(folderPaths, { force: true });
+  }, [folderPaths, startScan]);
 
   // Commands from main (e.g. "Open ROM Folder..." should prompt the folder picker).
   useEffect(() => {
@@ -207,39 +294,31 @@ export default function RomListWindow() {
 
   const done = !!scanMeta?.done;
   const scanning = scanMeta && done === false;
+  const visibleCount = visibleItems.length;
+  const totalCount = sortedItems.length;
+  const hasActiveFilters = activeFilters.length > 0;
+  const folderSubtitle = formatFolderPathsSubtitle(folderPaths);
 
   return (
     <div className="nv-toolwindow">
-      <div className="nv-modal-header">
+      <div className="nv-modal-header nv-romlist-header">
         <div className="nv-modal-title">ROMs in folder</div>
-        <button
-          type="button"
-          className="nv-btn"
-          onClick={selectFolderAndScan}
-          title="Choose a folder to scan"
-        >
-          Select folder
-        </button>
-        <button
-          type="button"
-          className="nv-btn"
-          onClick={refresh}
-          disabled={!folderPath || !!scanning}
-          title={scanning ? 'Scan in progress' : 'Rescan folder'}
-        >
-          Refresh
-        </button>
-        <button
-          type="button"
-          className="nv-btn"
-          onClick={() => window.close()}
-        >
-          Close
-        </button>
+        <div className="nv-romlist-header-actions" aria-label="ROM list actions">
+          <FolderButton
+            onClick={selectFolderAndScan}
+            title="Select folders"
+          />
+          <RefreshButton
+            onClick={refresh}
+            disabled={!folderPaths.length || !!scanning}
+            title={scanning ? 'Refresh disabled while scan is in progress' : 'Refresh'}
+          />
+        </div>
+        <div className="nv-romlist-header-spacer" aria-hidden="true" />
       </div>
 
-      <div className="nv-modal-subtitle" title={folderPath || ''}>
-        {folderPath || '(No folder selected)'}
+      <div className="nv-modal-subtitle" title={folderSubtitle || ''}>
+        {folderSubtitle || '(No folder selected)'}
       </div>
 
       <div className="nv-modal-meta">
@@ -249,6 +328,7 @@ export default function RomListWindow() {
           <>
             <span className="nv-badge">scanned {scanMeta.scannedCount || 0}/{scanMeta.totalCount || 0}</span>
             <span className="nv-badge">found {scanMeta.foundCount || 0}</span>
+            <span className="nv-badge">showing {visibleCount}/{totalCount}</span>
             {scanMeta.errorCount ? <span className="nv-badge">errors {scanMeta.errorCount}</span> : null}
             {scanMeta.done ? <span className="nv-badge nv-badge-good">done</span> : <span className="nv-badge">scanning…</span>}
           </>
@@ -256,6 +336,24 @@ export default function RomListWindow() {
           <span className="nv-badge">Select a folder to scan for ROMs.</span>
         )}
         {status ? <span className="nv-badge">{status}</span> : null}
+      </div>
+
+      <div className="nv-modal-filters">
+        <input
+          type="text"
+          className="nv-textinput"
+          value={filterState.nameQuery}
+          onChange={(e) => {
+            const nextValue = e.target.value;
+            setFilterState((prev) => ({
+              ...(prev || {}),
+              nameQuery: nextValue
+            }));
+          }}
+          placeholder="Filter ROM names…"
+          aria-label="Filter ROMs by name"
+          spellCheck={false}
+        />
       </div>
 
       <div className="nv-modal-list" style={{ flex: 1 }}>
@@ -290,17 +388,20 @@ export default function RomListWindow() {
           </button>
         </div>
 
-        {sortedItems.length === 0 ? (
-          <div className="nv-modal-empty">{folderPath ? 'No supported ROMs found.' : 'No ROMs loaded yet.'}</div>
+        {visibleItems.length === 0 ? (
+          <div className="nv-modal-empty">
+            {folderPaths.length
+              ? (totalCount > 0 && hasActiveFilters ? 'No ROMs match the filter.' : 'No supported ROMs found.')
+              : 'No ROMs loaded yet.'}
+          </div>
         ) : (
-          sortedItems.map((it) => (
+          visibleItems.map((it) => (
             <button
               key={it.filePath}
               type="button"
-              className={`nv-modal-row${it.isAnalysisSupported === false ? ' nv-modal-row-unsupported' : ''}`}
+              className={`nv-modal-row${it.isAnalyzable === false ? ' nv-modal-row-unsupported' : ''}`}
               onClick={() => openRom(it.filePath)}
-              title={it.isAnalysisSupported === false ? `${it.filePath}
-Not currently supported for static analysis.` : it.filePath}
+              title={it.isAnalyzable === false ? `${it.filePath}\nNot currently supported for static analysis.` : it.filePath}
             >
               <div className="nv-col nv-col-name">{it.filename}</div>
               <div className="nv-col nv-col-meta">{it.mapperName || 'NROM'}</div>

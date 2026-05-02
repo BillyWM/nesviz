@@ -2,20 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { BlockCard } from './BlockCard.jsx';
-import { hex4, hex6 } from '../util/hex.js';
+import { hex4 } from '../util/hex.js';
 import { GapCard } from './GapCard.jsx';
-import { UNKNOWN_FETCH_CTX_KEY } from '../../../shared/analyze/fetchContext.js';
 
 export function BlockStack({
   timeline,
   blocksById,
   focusLocation,
-  markedPoiSpan,
+  markedRomSpan,
+  isLoadingCachedAnalysis = false,
   onFocused,
-  onNavigateToCpuAddr,
-  canNavigateCpuAddr,
-  resolveBlockIdForCpuAddr,
-  labelsBySite,
+  onNavigateToRomOff,
+  labelsByRomOff,
   labelsByAddr,
   onHoverLine,
   onContextMenuLine,
@@ -102,75 +100,23 @@ export function BlockStack({
 
   function synthesizeGapDebugReason(item, index) {
     if (!showDebugInfo) return [];
-    const debug = analysisDebug || null;
     const prevItem = findPrevCodeItem(index);
-    if (!prevItem) return ['No preceding decoded block to infer a likely start site.'];
+    if (!prevItem) return ['No preceding decoded block to infer a likely start location.'];
     const prevFull = blockCache[prevItem.blockId] || null;
-    const prevIndex = blocksById.get(prevItem.blockId) || null;
     const prevLines = Array.isArray(prevFull?.lines) ? prevFull.lines : [];
     const lastLine = prevLines.length ? prevLines[prevLines.length - 1] : null;
     if (!lastLine) return ['Preceding block is not fully loaded yet.'];
 
-    const lastCpu = typeof lastLine.cpuAddr === 'number' ? (lastLine.cpuAddr & 0xffff) : null;
+    const lastRomOff = typeof lastLine.romOff === 'number' ? (lastLine.romOff >>> 0) : null;
     const lastLen = parseBytesLen(lastLine.bytesText);
-    const lastCtxKey = (typeof lastLine.ctxKey === 'string' && lastLine.ctxKey)
-      ? lastLine.ctxKey
-      : ((prevIndex?.instances?.[0]?.ctxId) || prevIndex?.ctxKey || UNKNOWN_FETCH_CTX_KEY);
-    if (lastCpu == null || !(lastLen > 0)) return ['Could not infer the next CPU site after the preceding block.'];
+    if (lastRomOff === null || !(lastLen > 0)) return ['Could not infer the next ROM location after the preceding block.'];
 
-    const nextCpu = (lastCpu + lastLen) & 0xffff;
-    const nextSiteKey = `${lastCtxKey}:${hex4(nextCpu)}`;
-    const reasons = [];
-
-    const siteStates = Array.isArray(debug?.cfg?.siteDebugStates) ? debug.cfg.siteDebugStates : [];
-    const siteState = siteStates.find((s) => s?.siteKey === nextSiteKey) || null;
-    if (siteState?.ctxKey) {
-      if (siteState.ctxKey === lastCtxKey) {
-        reasons.push(`Gap start context matches the preceding block context (${lastCtxKey}).`);
-      } else {
-        reasons.push(`Gap start context is ${siteState.ctxKey}, but the preceding block context is ${lastCtxKey}.`);
-      }
-    } else {
-      reasons.push(`Preceding block context is ${lastCtxKey}; gap start context was not recorded.`);
-    }
-    if (siteState) {
-      if (siteState.leaderKind === 'hard') reasons.push(`Gap start $${hex4(nextCpu)} is a hard leader/start site.`);
-      else if (siteState.leaderKind === 'soft') reasons.push(`Gap start $${hex4(nextCpu)} is a soft leader/start site.`);
-
-      const leaderReasons = Array.isArray(siteState.leaderReasons) ? siteState.leaderReasons.slice().sort((a, b) => leaderReasonPriority(a) - leaderReasonPriority(b)) : [];
-      const leaderReasonText = leaderReasons.map((r) => formatLeaderReason(r, nextCpu)).find(Boolean) || null;
-      if (leaderReasonText && !reasons.includes(leaderReasonText)) reasons.push(leaderReasonText);
-
-      if (siteState.wasScheduled && siteState.wasAttempted && siteState.wasDecoded) {
-        reasons.push('It was scheduled, attempted, and decoded, but no block was materialized.');
-      } else if (siteState.wasScheduled && siteState.wasAttempted) {
-        reasons.push('It was scheduled and attempted, but no decoded block was materialized.');
-      } else if (siteState.wasScheduled) {
-        reasons.push('It was scheduled as a start site, but never attempted.');
-      } else if (siteState.wasAttempted) {
-        reasons.push('It was attempted as a start site, but no decoded block was materialized.');
-      }
-
-      if (siteState.decodeFailureReason) reasons.push(`Attempt failed because ${mapDecodeFailureReason(siteState.decodeFailureReason)}.`);
-    }
-
-    const failures = Array.isArray(debug?.decodeFailuresByPc) ? debug.decodeFailuresByPc : [];
-    const failure = failures.find((f) => ((f?.pc ?? null) === nextCpu) && (((f?.ctxKey) || UNKNOWN_FETCH_CTX_KEY) === lastCtxKey));
-    if (failure && !reasons.some((r) => r.includes('Attempt failed because'))) {
-      reasons.push(`Attempt failed because ${mapDecodeFailureReason(failure.reason)}.`);
-    }
-
-    const unresolved = Array.isArray(debug?.cfg?.unresolvedDirectTargets) ? debug.cfg.unresolvedDirectTargets : [];
-    const unresolvedHit = unresolved.find((u) => ((u?.target ?? null) === nextCpu) && ((((u?.targetCtxKey) || (u?.ctxKey)) || UNKNOWN_FETCH_CTX_KEY) === lastCtxKey));
-    if (unresolvedHit) reasons.push(`Decoded control flow targeted $${hex4(nextCpu)}, but that start site did not materialize as a block.`);
-
+    const nextRomOff = (lastRomOff + lastLen) >>> 0;
     const flowType = lastLine?.flow?.type || null;
-    if (!reasons.length && flowType === 'next') {
-      reasons.push(`Likely split at a leader/start site near $${hex4(nextCpu)} that did not materialize as a block.`);
+    if (flowType === 'next') {
+      return [`Likely split near ROM ${hex4(nextRomOff & 0xffff)} that did not materialize as a block.`];
     }
-    if (!reasons.length) reasons.push('Likely an undecoded island between discovered blocks.');
-
-    return Array.from(new Set(reasons));
+    return ['Likely an undecoded island between discovered blocks.'];
   }
 
   const blockIdToTimelineIndex = useMemo(() => {
@@ -373,21 +319,12 @@ export function BlockStack({
         await new Promise((r) => window.requestAnimationFrame(r));
         if (cancelled) return;
 
-        const anchorRomOff = focusLocation?.anchorRomOff;
-        if (typeof anchorRomOff === 'number') {
+        const focusRomOff = focusLocation?.focusRomOff;
+        if (typeof focusRomOff === 'number') {
           const blockEl = document.getElementById(`nv-block-${blockId}`);
           const container = parentRef.current;
           if (blockEl && container) {
-            // Match the romOff column text (hex6), since we don't have an explicit data attribute.
-            const targetText = hex6(anchorRomOff);
-            const cells = blockEl.querySelectorAll('.nv-col-romoff');
-            let targetEl = null;
-            for (const c of cells) {
-              if ((c.textContent || '').trim() === targetText) {
-                targetEl = c;
-                break;
-              }
-            }
+            const targetEl = blockEl.querySelector(`.nv-line[data-rom-off="${focusRomOff >>> 0}"]`);
 
             if (targetEl) {
               const cRect = container.getBoundingClientRect();
@@ -417,8 +354,12 @@ export function BlockStack({
   if (!hasAny) {
     return (
       <div className="nv-empty">
-        <div className="nv-empty-title">No analysis yet</div>
-        <div className="nv-empty-sub">Load a ROM, then run static analysis to see discovered blocks.</div>
+        <div className="nv-empty-title">{isLoadingCachedAnalysis ? 'Loading cached analysis' : 'No analysis yet'}</div>
+        <div className="nv-empty-sub">
+          {isLoadingCachedAnalysis
+            ? 'Cached analysis was detected for this ROM and is loading now.'
+            : 'Load a ROM, then run static analysis to see discovered blocks.'}
+        </div>
       </div>
     );
   }
@@ -468,6 +409,27 @@ export function BlockStack({
           }
 
           const blockId = item.blockId;
+          if (!blockId) {
+            return (
+              <div
+                key={vr.key}
+                data-index={vr.index}
+                ref={rowVirtualizer.measureElement}
+                className="nv-virt-row"
+                style={rowStyle}
+              >
+                <GapCard
+                  item={item}
+                  showBytes={!!shownGapBytesByKey?.[item.gapKey || `gap:${item.type}:${item.romStart}:${item.romEnd}`]}
+                  bytesText={gapBytesByKey?.[item.gapKey || `gap:${item.type}:${item.romStart}:${item.romEnd}`] || ''}
+                  isLoadingBytes={!!gapBytesLoadingByKey?.[item.gapKey || `gap:${item.type}:${item.romStart}:${item.romEnd}`]}
+                  onContextMenuGap={onContextMenuGap}
+                  showDebugInfo={showDebugInfo}
+                  debugReasons={synthesizeGapDebugReason(item, vr.index)}
+                />
+              </div>
+            );
+          }
           const b = blocksById.get(blockId);
           const full = blockCache[blockId];
           const isExpanded = !!expandedById[blockId];
@@ -489,11 +451,9 @@ export function BlockStack({
                 isExpanded={isExpanded}
                 isLoading={isLoading}
                 isFocused={isFocused}
-                markedPoiSpan={markedPoiSpan}
-                onNavigateToCpuAddr={onNavigateToCpuAddr}
-                canNavigateCpuAddr={canNavigateCpuAddr}
-                resolveBlockIdForCpuAddr={resolveBlockIdForCpuAddr}
-                labelsBySite={labelsBySite}
+                markedRomSpan={markedRomSpan}
+                onNavigateToRomOff={onNavigateToRomOff}
+                labelsByRomOff={labelsByRomOff}
                 labelsByAddr={labelsByAddr}
                 onHoverLine={onHoverLine}
                 onContextMenuLine={onContextMenuLine}

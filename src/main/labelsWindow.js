@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+import { loadRendererWindow } from './utils/windowLoaderUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,28 +13,6 @@ let labelsWindow = null;
 
 export function setMainWindow(win) {
   mainWindow = win;
-}
-
-function getDevRendererUrl() {
-  return (
-    process.env.VITE_DEV_SERVER_URL ||
-    process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ||
-    process.env.ELECTRON_RENDERER_URL ||
-    null
-  );
-}
-
-function loadLabelsWindow(win) {
-  const devUrl = getDevRendererUrl();
-  if (devUrl) {
-    const base = devUrl.replace(/\/+$/, '');
-    win.loadURL(`${base}/labels.html`);
-    return;
-  }
-
-  // In production builds, electron-vite outputs renderer assets under ../renderer.
-  const htmlPath = path.join(__dirname, '../renderer/labels.html');
-  win.loadFile(htmlPath);
 }
 
 export function showLabelsWindow() {
@@ -70,7 +49,7 @@ export function showLabelsWindow() {
     labelsWindow = null;
   });
 
-  loadLabelsWindow(labelsWindow);
+  loadRendererWindow(labelsWindow, 'labels.html', __dirname);
 }
 
 export function registerLabelsIpc() {

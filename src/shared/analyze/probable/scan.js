@@ -1,15 +1,12 @@
 import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
 import { disasmOneAt } from '../../cpu6502/disasm.js';
 import { hexN } from '../../cpu6502/fmt.js';
+import { clamp } from '../../utils/numberUtils.js';
 
 import { DEFAULT_PROBABLE_CONFIG } from './config.js';
 
 function probBlockId(romStart) {
   return `prob:${hexN(romStart, 6)}`;
-}
-
-function clamp(n, lo, hi) {
-  return Math.max(lo, Math.min(hi, n));
 }
 
 function decodeLinear({ prgBytes, mapper, cpuStart, romStart, maxBytes }) {

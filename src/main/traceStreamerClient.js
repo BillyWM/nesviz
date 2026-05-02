@@ -1,5 +1,9 @@
 import net from 'node:net';
 
+import { readLenString } from '../shared/utils/binaryReadUtils.js';
+import { bufferToHex, fmtHex } from '../shared/utils/hexUtils.js';
+import { formatBytes } from '../shared/utils/byteFormatUtils.js';
+
 const HOST = '127.0.0.1';
 const START_PORT = 63783;
 const PORT_ATTEMPTS = 10;
@@ -25,37 +29,6 @@ export const SyncReason = Object.freeze({
   LoadState: 1,
   Reset: 2
 });
-
-function toHex32(u32) {
-  const n = Number(u32) >>> 0;
-  return '0x' + n.toString(16).padStart(8, '0');
-}
-
-function formatBytes(n) {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return '';
-  const abs = Math.abs(num);
-  if (abs >= 1024 * 1024) return `${num} (${(num / (1024 * 1024)).toFixed(2)} MiB)`;
-  if (abs >= 1024) return `${num} (${(num / 1024).toFixed(2)} KiB)`;
-  return String(num);
-}
-
-function bufferToHex(buf, maxBytes = 256) {
-  if (!buf || !buf.length) return '';
-  const slice = buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
-  const hex = Array.from(slice).map((b) => b.toString(16).padStart(2, '0')).join(' ');
-  return buf.length > maxBytes ? `${hex} …(+${buf.length - maxBytes} bytes)` : hex;
-}
-
-function readLenString(buf, offset) {
-  if (offset + 2 > buf.length) throw new Error('Truncated string length');
-  const len = buf.readUInt16LE(offset);
-  offset += 2;
-  if (offset + len > buf.length) throw new Error('Truncated string bytes');
-  const value = buf.subarray(offset, offset + len).toString('utf8');
-  offset += len;
-  return { value, offset };
-}
 
 function encodeFrame(msgType, payload) {
   const payloadBuf = payload || Buffer.alloc(0);
@@ -319,18 +292,18 @@ export function createTraceStreamerClient({ onStatus } = {}) {
           hasGame: true,
           fileName: fileNameRead.value,
           sha1: sha1Read.value,
-          crc32: toHex32(crc32),
-          prgCrc32: toHex32(prgCrc32),
-          prgChrCrc32: toHex32(prgChrCrc32),
+          crc32: `0x${fmtHex(crc32, 8).toLowerCase()}`,
+          prgCrc32: `0x${fmtHex(prgCrc32, 8).toLowerCase()}`,
+          prgChrCrc32: `0x${fmtHex(prgChrCrc32, 8).toLowerCase()}`,
           mapperId: String(mapperId),
           submapperId: String(submapperId),
           mirroring: String(mirroring),
-          prgRomSize: formatBytes(prgRomSize),
-          chrRomSize: formatBytes(chrRomSize),
-          workRamSize: formatBytes(workRamSize),
-          saveRamSize: formatBytes(saveRamSize),
-          chrRamSize: formatBytes(chrRamSize),
-          saveChrRamSize: formatBytes(saveChrRamSize)
+          prgRomSize: formatBytes(prgRomSize, { includeRaw: true, precision: 2, emptyOnInvalid: true }),
+          chrRomSize: formatBytes(chrRomSize, { includeRaw: true, precision: 2, emptyOnInvalid: true }),
+          workRamSize: formatBytes(workRamSize, { includeRaw: true, precision: 2, emptyOnInvalid: true }),
+          saveRamSize: formatBytes(saveRamSize, { includeRaw: true, precision: 2, emptyOnInvalid: true }),
+          chrRamSize: formatBytes(chrRamSize, { includeRaw: true, precision: 2, emptyOnInvalid: true }),
+          saveChrRamSize: formatBytes(saveChrRamSize, { includeRaw: true, precision: 2, emptyOnInvalid: true })
         });
         return;
       }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+import { loadRendererWindow } from './utils/windowLoaderUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,28 +13,6 @@ let traceStreamerWindow = null;
 
 export function setMainWindow(win) {
   mainWindow = win;
-}
-
-function getDevRendererUrl() {
-  return (
-    process.env.VITE_DEV_SERVER_URL ||
-    process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ||
-    process.env.ELECTRON_RENDERER_URL ||
-    null
-  );
-}
-
-function loadTraceStreamerWindow(win) {
-  const devUrl = getDevRendererUrl();
-  if (devUrl) {
-    const base = devUrl.replace(/\/+$/, '');
-    win.loadURL(`${base}/tracestreamer.html`);
-    return;
-  }
-
-  // In production builds, electron-vite outputs renderer assets under ../renderer.
-  const htmlPath = path.join(__dirname, '../renderer/tracestreamer.html');
-  win.loadFile(htmlPath);
 }
 
 export function showTraceStreamerWindow() {
@@ -70,5 +49,5 @@ export function showTraceStreamerWindow() {
     traceStreamerWindow = null;
   });
 
-  loadTraceStreamerWindow(traceStreamerWindow);
+  loadRendererWindow(traceStreamerWindow, 'tracestreamer.html', __dirname);
 }

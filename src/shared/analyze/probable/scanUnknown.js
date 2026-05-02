@@ -1,3 +1,5 @@
+import { rangesOverlap } from '../../utils/rangeUtils.js';
+
 import { decodeChunkFromRom } from './decodeChunk.js';
 import { scoreChunk } from './scoreChunk.js';
 
@@ -197,6 +199,3 @@ function selectEvenlySpreadStarts(scored, range, maxK) {
   return picks;
 }
 
-function rangesOverlap(a0, a1, b0, b1) {
-  return Math.max(a0, b0) < Math.min(a1, b1);
-}

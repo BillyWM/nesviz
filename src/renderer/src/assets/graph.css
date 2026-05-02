@@ -77,7 +77,31 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 12px;
   background: rgba(15, 23, 42, 0.94);
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.graph-loading-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.92);
+  color: #e5e7eb;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.graph-loading-close:hover {
+  background: rgba(51, 65, 85, 0.98);
+}
+
+.graph-loading-close:focus-visible {
+  outline: 2px solid rgba(250, 204, 21, 0.9);
+  outline-offset: 2px;
 }
 
 .graph-loading-title {

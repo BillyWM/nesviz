@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { fmtHex } from '../../shared/utils/hexUtils.js';
 
 const ROW_HEIGHT = 16;
 const SECTION_GAP = 18;
-
-function fmtHex(value, width) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '?'.repeat(width);
-  return (value >>> 0).toString(16).toUpperCase().padStart(width, '0');
-}
 
 function buildRows(sizeBytes, occupiedRanges, rowWidthBytes) {
   const rows = [];
@@ -61,6 +57,30 @@ function spanClassName(type) {
     default:
       return 'memory-map-span';
   }
+}
+
+function sliceRanges(occupiedRanges, sectionStart, sectionEnd) {
+  const ranges = [];
+  for (const range of Array.isArray(occupiedRanges) ? occupiedRanges : []) {
+    const start = Number(range?.start);
+    const end = Number(range?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    const overlapStart = Math.max(sectionStart, start);
+    const overlapEnd = Math.min(sectionEnd, end);
+    if (overlapEnd <= overlapStart) continue;
+    ranges.push({
+      start: overlapStart - sectionStart,
+      end: overlapEnd - sectionStart,
+      type: String(range?.type || 'group')
+    });
+  }
+  return ranges;
+}
+
+function buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, sectionStart, sectionEnd) {
+  const start = Math.max(0, Math.min(sizeBytes, sectionStart | 0));
+  const end = Math.max(start, Math.min(sizeBytes, sectionEnd | 0));
+  return buildRows(end - start, sliceRanges(occupiedRanges, start, end), rowWidthBytes);
 }
 
 function MemorySection({ title, baseLabel, rows, cellSizePx, extraTop = 0 }) {
@@ -140,10 +160,29 @@ export default function MemoryMapWindow() {
   const rowWidthBytes = Number(data?.rowWidthBytes) > 0 ? (data.rowWidthBytes | 0) : 64;
   const cellSizePx = Number(data?.cellSizePx) > 0 ? (data.cellSizePx | 0) : 16;
 
-  const ramRows = useMemo(() => {
+  const ramSections = useMemo(() => {
     const sizeBytes = Number(data?.ram?.sizeBytes) > 0 ? (data.ram.sizeBytes | 0) : 0;
     const occupiedRanges = Array.isArray(data?.ram?.occupiedRanges) ? data.ram.occupiedRanges : [];
-    return buildRows(sizeBytes, occupiedRanges, rowWidthBytes);
+    return [
+      {
+        key: 'zp',
+        label: 'Zero Page',
+        baseLabel: 0x0000,
+        rows: buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, 0x0000, 0x0100)
+      },
+      {
+        key: 'stack',
+        label: 'Stack',
+        baseLabel: 0x0100,
+        rows: buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, 0x0100, 0x0200)
+      },
+      {
+        key: 'ram',
+        label: 'RAM (0200–07FF)',
+        baseLabel: 0x0200,
+        rows: buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, 0x0200, sizeBytes)
+      }
+    ].filter((section) => Array.isArray(section.rows) && section.rows.length);
   }, [data, rowWidthBytes]);
 
   const prgRegions = useMemo(() => {
@@ -171,12 +210,22 @@ export default function MemoryMapWindow() {
         {status ? <div className="memory-map-status">{status}</div> : null}
 
         <div className="memory-map-root" style={{ '--memory-map-grid-width': `${gridWidth}px` }}>
-          <MemorySection
-            title="RAM"
-            baseLabel={0}
-            rows={ramRows}
-            cellSizePx={cellSizePx}
-          />
+          <section className="memory-map-section">
+            <div className="memory-map-section-title">RAM</div>
+            <div className="memory-map-region-list">
+              {ramSections.map((section) => (
+                <div key={`ram:${section.key}`}>
+                  <div className="memory-map-region-label">{section.label}</div>
+                  <MemorySection
+                    title=""
+                    baseLabel={section.baseLabel}
+                    rows={section.rows}
+                    cellSizePx={cellSizePx}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
 
           <div className="memory-map-gap" style={{ height: `${SECTION_GAP}px` }} />
 

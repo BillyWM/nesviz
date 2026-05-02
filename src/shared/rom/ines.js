@@ -1,7 +1,7 @@
 import {
   classifyMapperFromHeader,
   getMapperDisplayName,
-  isCurrentStaticAnalysisTargetMapper,
+  getStaticAnalysisSupportInfo,
   resolveMapperInfo
 } from './mapperInfo.js';
 import { crc32HexBuffers } from './crc32.js';
@@ -74,7 +74,6 @@ export function parseInesHeader(buffer) {
 
   const prgBanks16k = Math.floor(prgSize / (16 * 1024));
   const chrBanks8k = Math.floor(chrSize / (8 * 1024));
-  const mapperName = getMapperDisplayName(mapperNumber);
   const analysisMapper = classifyMapperFromHeader({
     mapperNumber,
     submapperNumber,
@@ -86,6 +85,8 @@ export function parseInesHeader(buffer) {
     chrNvramSize,
     isNes2
   });
+  const mapperName = analysisMapper?.mapperName || getMapperDisplayName(mapperNumber);
+  const analysisSupport = getStaticAnalysisSupportInfo(analysisMapper);
 
   return {
     format: isNes2 ? 'NES 2.0' : 'iNES',
@@ -107,7 +108,7 @@ export function parseInesHeader(buffer) {
     hasBattery,
     fourScreen,
     mirroring,
-    isTargetMapper: isCurrentStaticAnalysisTargetMapper(mapperNumber),
+    isTargetMapper: analysisSupport.listable,
     analysisMapper
   };
 }
@@ -140,10 +141,12 @@ export function parseInes(buffer) {
     },
     romOverride
   );
+  const analysisSupport = getStaticAnalysisSupportInfo(analysisMapper);
 
   return {
     ...header,
     submapperNumber: resolvedSubmapperNumber,
+    isTargetMapper: analysisSupport.listable,
     analysisMapper,
     prgChrCrc32,
     prg,

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,12 +7,17 @@ import { registerTraceStreamerIpc } from './traceStreamerIpc.js';
 import { installAppMenu } from './menu.js';
 import { ensureUserDataLoaded, getRecentRomPaths } from './userDataStore.js';
 import { registerRomListIpc, setMainWindow as setMainWindowForRomList } from './romListWindow.js';
+import { registerPreferencesIpc, setMainWindow as setMainWindowForPreferences } from './preferencesWindow.js';
 import { registerLabelsIpc, setMainWindow as setMainWindowForLabels } from './labelsWindow.js';
 import { setMainWindow as setMainWindowForTraceStreamer } from './traceStreamerWindow.js';
 import { registerAnalysisLogIpc, setMainWindow as setMainWindowForAnalysisLog } from './analysisLogWindow.js';
 import { registerTuningIpc } from './tuningState.js';
+import { registerMarkovIpc } from './markovIpc.js';
 import { setMainWindow as setMainWindowForTuning } from './tuningWindow.js';
+import { setMainWindow as setMainWindowForMarkov } from './markovWindow.js';
+import { setMainWindow as setMainWindowForMarkovMap } from './markovMapWindow.js';
 import { setMainWindow as setMainWindowForMemoryMap } from './memoryMapWindow.js';
+import { setMainWindow as setMainWindowForHeatmap } from './heatmapWindow.js';
 import { setMainWindow as setMainWindowForGraph } from './graphWindow.js';
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowState } from './windowState.js';
 
@@ -54,19 +59,30 @@ async function createWindow() {
 app.whenReady().then(async () => {
   await ensureUserDataLoaded();
   const recentRoms = await getRecentRomPaths();
+  ipcMain.handle('nesviz:copyText', async (_evt, { text }) => {
+    const value = typeof text === 'string' ? text : String(text ?? '');
+    clipboard.writeText(value);
+    return { ok: true };
+  });
   registerAnalysisIpc();
   registerTraceStreamerIpc();
   registerRomListIpc();
+  registerPreferencesIpc();
   registerLabelsIpc();
   registerAnalysisLogIpc();
   registerTuningIpc();
+  registerMarkovIpc();
   await createWindow();
   setMainWindowForRomList(win);
+  setMainWindowForPreferences(win);
   setMainWindowForLabels(win);
   setMainWindowForTraceStreamer(win);
   setMainWindowForAnalysisLog(win);
   setMainWindowForTuning(win);
+  setMainWindowForMarkov(win);
+  setMainWindowForMarkovMap(win);
   setMainWindowForMemoryMap(win);
+  setMainWindowForHeatmap(win);
   setMainWindowForGraph(win);
   installAppMenu({ win, recentRoms });
 });

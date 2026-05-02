@@ -1,3 +1,13 @@
+import { fmtHex as fmtHexRaw } from '../../utils/hexUtils.js';
+import { memKey } from '../../utils/addressKeyUtils.js';
+import { addToArrayMap, addToSetMap } from '../../utils/collectionMapUtils.js';
+import { normalizePhysicalRom } from '../../utils/romIdentityUtils.js';
+
+
+function fmtHex(v, width = 4) {
+  return `$${fmtHexRaw(v, width)}`;
+}
+
 const DEFAULT_TRACE_IO_ADDRS = [
   0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
   0x4014
@@ -15,10 +25,6 @@ const IO_ADDR_NAMES = {
   0x4014: 'OAMDMA'
 };
 
-function fmtHex(v, width = 4) {
-  return `$${(v >>> 0).toString(16).toUpperCase().padStart(width, '0')}`;
-}
-
 function ioName(addr) {
   return IO_ADDR_NAMES[addr & 0xffff] || `IO ${fmtHex(addr & 0xffff)}`;
 }
@@ -26,28 +32,6 @@ function ioName(addr) {
 function observationIdOf(obs, index) {
   if (obs && (typeof obs.id === 'string' || typeof obs.id === 'number')) return String(obs.id);
   return `obs:${index + 1}`;
-}
-
-function memKey(space, addr) {
-  return `${space}:${space === 'rom' ? (addr >>> 0) : (addr & 0xffff)}`;
-}
-
-function addToArrayMap(map, key, value) {
-  let arr = map.get(key);
-  if (!arr) {
-    arr = [];
-    map.set(key, arr);
-  }
-  arr.push(value);
-}
-
-function addToSetMap(map, key, value) {
-  let set = map.get(key);
-  if (!set) {
-    set = new Set();
-    map.set(key, set);
-  }
-  set.add(value);
 }
 
 function walkProv(prov, visit, seen = null) {
@@ -93,34 +77,44 @@ function walkProv(prov, visit, seen = null) {
 }
 
 
-function normalizePhysicalRom(physicalRom) {
-  if (!physicalRom || typeof physicalRom !== 'object') return { kind: 'unknown', romOffsets: [] };
-  const vals = Array.isArray(physicalRom.romOffsets)
-    ? Array.from(new Set(physicalRom.romOffsets
-        .map((off) => (typeof off === 'number' ? off : Number(off)))
-        .filter((off) => Number.isFinite(off) && off >= 0)
-        .map((off) => off >>> 0))).sort((a, b) => a - b)
-    : [];
-  if (!vals.length) return { kind: 'unknown', romOffsets: [] };
-  return { kind: vals.length === 1 ? 'exact' : (physicalRom.kind === 'set' ? 'set' : 'exact'), romOffsets: vals };
-}
 function shallowObsRef(obs) {
   const out = {
     id: String(obs.id),
     kind: obs.kind,
     atRomOff: typeof obs.atRomOff === 'number' ? (obs.atRomOff >>> 0) : null,
     cpuAddr: typeof obs.cpuAddr === 'number' ? (obs.cpuAddr & 0xffff) : null,
-    blockId: typeof obs.blockId === 'string' ? obs.blockId : null,
+    rawBlockId: typeof obs.rawBlockId === 'string' ? obs.rawBlockId : null,
     entryFamilies: Array.isArray(obs.entryFamilies) ? [...obs.entryFamilies] : [],
-    functionIds: Array.isArray(obs.functionIds) ? [...obs.functionIds] : []
+    functionIds: Array.isArray(obs.functionIds) ? [...obs.functionIds] : [],
+    uses: Array.isArray(obs.uses) ? [...obs.uses] : [],
+    defs: Array.isArray(obs.defs) ? [...obs.defs] : [],
+    inputProvIds: Array.isArray(obs.inputProvIds) ? [...obs.inputProvIds] : [],
+    outputProvIds: Array.isArray(obs.outputProvIds) ? [...obs.outputProvIds] : []
   };
   if (obs.kind === 'store8') {
     out.srcReg = obs.srcReg || null;
     out.dst = obs.dst ? { space: obs.dst.space, addr: obs.dst.addr & 0xffff, name: (obs.dst.space === 'io') ? ioName(obs.dst.addr) : null } : null;
   }
+  if (obs.kind === 'valueFlow8') {
+    out.mnemonic = obs.mnemonic || null;
+    out.mode = obs.mode || null;
+    out.opKind = obs.opKind || null;
+    out.dstReg = obs.dstReg || null;
+    out.dst = obs.dst ? { space: obs.dst.space, addr: obs.dst.addr & 0xffff, name: (obs.dst.space === 'io') ? ioName(obs.dst.addr) : null } : null;
+    out.srcRegs = Array.isArray(obs.srcRegs) ? [...obs.srcRegs] : [];
+    out.imm = typeof obs.imm === 'number' ? (obs.imm & 0xff) : null;
+  }
   if (obs.kind === 'read8') {
     out.dstReg = obs.dstReg || null;
-    out.src = obs.src ? { space: obs.src.space, addr: obs.src.addr & 0xffff, name: (obs.src.space === 'io') ? ioName(obs.src.addr) : null, romOff: typeof obs.src.romOff === 'number' ? (obs.src.romOff >>> 0) : null } : null;
+    out.src = obs.src ? { space: obs.src.space, addr: typeof obs.src.addr === 'number' ? (obs.src.addr & 0xffff) : null, name: (obs.src.space === 'io' && typeof obs.src.addr === 'number') ? ioName(obs.src.addr) : null, romOff: typeof obs.src.romOff === 'number' ? (obs.src.romOff >>> 0) : null } : null;
+    out.addrFlow = obs.addrFlow ? {
+      cpuAddr: typeof obs.addrFlow.cpuAddr === 'number' ? (obs.addrFlow.cpuAddr & 0xffff) : null,
+      cpuAddrSet: Array.isArray(obs.addrFlow.cpuAddrSet) ? [...obs.addrFlow.cpuAddrSet] : [],
+      baseCpuAddr: typeof obs.addrFlow.baseCpuAddr === 'number' ? (obs.addrFlow.baseCpuAddr & 0xffff) : null,
+      ptrZp: typeof obs.addrFlow.ptrZp === 'number' ? (obs.addrFlow.ptrZp & 0xff) : null,
+      indexReg: obs.addrFlow.indexReg || null,
+      addrProvIds: Array.isArray(obs.addrFlow.addrProvIds) ? [...obs.addrFlow.addrProvIds] : []
+    } : null;
     if (obs.src?.space === 'rom') {
       out.physicalRom = normalizePhysicalRom(obs.src.physicalRom || (typeof obs.src?.romOff === 'number' ? { kind: 'exact', romOffsets: [obs.src.romOff >>> 0] } : null));
     }
@@ -133,6 +127,7 @@ function observationNodeKind(obs) {
   if (obs.kind === 'store8') return 'storeObservation';
   if (obs.kind === 'cmp8') return 'compareObservation';
   if (obs.kind === 'zpPtr16') return 'zeroPagePointerObservation';
+  if (obs.kind === 'valueFlow8') return 'valueFlowObservation';
   return 'observation';
 }
 
@@ -237,7 +232,7 @@ function buildHardwareTrace({ rootObs, observationsById, readDefLinksByReadId, o
     target: rootObs?.dst ? { space: rootObs.dst.space, addr: rootObs.dst.addr & 0xffff } : null,
     atRomOff: typeof rootObs.atRomOff === 'number' ? (rootObs.atRomOff >>> 0) : null,
     cpuAddr: typeof rootObs.cpuAddr === 'number' ? (rootObs.cpuAddr & 0xffff) : null,
-    blockId: rootObs.blockId || null,
+    rawBlockId: rootObs.rawBlockId || null,
     entryFamilies: Array.isArray(rootObs.entryFamilies) ? [...rootObs.entryFamilies] : [],
     functionIds: Array.isArray(rootObs.functionIds) ? [...rootObs.functionIds] : []
   });
@@ -270,10 +265,12 @@ function buildHardwareTrace({ rootObs, observationsById, readDefLinksByReadId, o
         ? `Store8 ${(obs.dst?.space === 'io') ? ioName(obs.dst.addr) : `${obs.dst?.space}:${fmtHex(obs.dst?.addr ?? 0, 4)}`}`
         : obs.kind === 'read8'
           ? `Read8 ${obs.src?.space}:${fmtHex(obs.src?.addr ?? 0, 4)}`
-          : `${obs.label || obs.kind}`,
+          : obs.kind === 'valueFlow8'
+            ? `${obs.mnemonic || 'Flow'}${obs.dstReg ? ` → ${obs.dstReg}` : (obs.dst?.space ? ` → ${obs.dst.space}:${fmtHex(obs.dst?.addr ?? 0, 4)}` : '')}`
+            : `${obs.label || obs.kind}`,
       atRomOff: typeof obs.atRomOff === 'number' ? (obs.atRomOff >>> 0) : null,
       cpuAddr: typeof obs.cpuAddr === 'number' ? (obs.cpuAddr & 0xffff) : null,
-      blockId: typeof obs.blockId === 'string' ? obs.blockId : null,
+      rawBlockId: typeof obs.rawBlockId === 'string' ? obs.rawBlockId : null,
       entryFamilies: Array.isArray(obs.entryFamilies) ? [...obs.entryFamilies] : [],
       functionIds: Array.isArray(obs.functionIds) ? [...obs.functionIds] : [],
       srcReg: obs.srcReg || null,
@@ -437,8 +434,8 @@ function buildAddressParticipation({ hardwareTraces }) {
         possibleTraceNodeIds: new Set(),
         hardwareTargets: new Set(),
         possibleHardwareTargets: new Set(),
-        blockIds: new Set(),
-        possibleBlockIds: new Set(),
+        rawBlockIds: new Set(),
+        possibleRawBlockIds: new Set(),
         functionIds: new Set(),
         possibleFunctionIds: new Set(),
         entryFamilies: new Set(),
@@ -455,7 +452,7 @@ function buildAddressParticipation({ hardwareTraces }) {
     (possible ? entry.possibleTraceNodeIds : entry.traceNodeIds).add(node.id);
     if (typeof hardwareTarget === 'number') (possible ? entry.possibleHardwareTargets : entry.hardwareTargets).add(hardwareTarget & 0xffff);
     if (typeof node.observationId === 'string') (possible ? entry.possibleObservationIds : entry.observationIds).add(node.observationId);
-    if (typeof node.blockId === 'string') (possible ? entry.possibleBlockIds : entry.blockIds).add(node.blockId);
+    if (typeof node.rawBlockId === 'string') (possible ? entry.possibleRawBlockIds : entry.rawBlockIds).add(node.rawBlockId);
     for (const functionId of node.functionIds || []) (possible ? entry.possibleFunctionIds : entry.functionIds).add(functionId);
     for (const family of node.entryFamilies || []) (possible ? entry.possibleEntryFamilies : entry.entryFamilies).add(family);
   }
@@ -509,8 +506,8 @@ function buildAddressParticipation({ hardwareTraces }) {
       possibleTraceNodeIds: Array.from(entry.possibleTraceNodeIds).sort(),
       hardwareTargets: Array.from(entry.hardwareTargets).sort((a, b) => a - b),
       possibleHardwareTargets: Array.from(entry.possibleHardwareTargets).sort((a, b) => a - b),
-      blockIds: Array.from(entry.blockIds).sort(),
-      possibleBlockIds: Array.from(entry.possibleBlockIds).sort(),
+      rawBlockIds: Array.from(entry.rawBlockIds).sort(),
+      possibleRawBlockIds: Array.from(entry.possibleRawBlockIds).sort(),
       functionIds: Array.from(entry.functionIds).sort(),
       possibleFunctionIds: Array.from(entry.possibleFunctionIds).sort(),
       entryFamilies: Array.from(entry.entryFamilies).sort(),
@@ -584,7 +581,7 @@ export function buildVsaDataflow({
       observationId: obsId,
       atRomOff: typeof obs?.atRomOff === 'number' ? (obs.atRomOff >>> 0) : null,
       cpuAddr: typeof obs?.cpuAddr === 'number' ? (obs.cpuAddr & 0xffff) : null,
-      blockId: obs?.blockId || null,
+      rawBlockId: obs?.rawBlockId || null,
       entryFamilies: Array.isArray(obs?.entryFamilies) ? [...obs.entryFamilies] : [],
       functionIds: Array.isArray(obs?.functionIds) ? [...obs.functionIds] : [],
       srcReg: obs?.srcReg || null,

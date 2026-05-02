@@ -2,27 +2,10 @@ import net from 'node:net';
 import { EventEmitter } from 'node:events';
 
 import { getActiveRomSummary } from './analysisIpc.js';
+import { formatBytes } from '../shared/utils/byteFormatUtils.js';
+import { isLoopbackAddress } from './utils/networkUtils.js';
 
 const TRACE_STREAMER_PORT = 63783; // "NES 83"
-
-function isLoopbackAddress(addr) {
-  if (!addr) return false;
-  if (addr === '127.0.0.1' || addr === '::1') return true;
-  // IPv4-mapped IPv6
-  if (addr.startsWith('::ffff:')) {
-    const v4 = addr.slice('::ffff:'.length);
-    return v4 === '127.0.0.1';
-  }
-  return false;
-}
-
-function formatBytes(bytes) {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '';
-  if (bytes === 0) return '0 B';
-  const kib = bytes / 1024;
-  if (Number.isInteger(kib)) return `${kib} KiB`;
-  return `${bytes} B`;
-}
 
 function blankRomInfo() {
   return {

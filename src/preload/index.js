@@ -5,25 +5,37 @@ contextBridge.exposeInMainWorld('nesviz', {
   openRomPath: (filepath) => ipcRenderer.invoke('nesviz:openRomPath', { filepath }),
   getStartupRomPath: () => ipcRenderer.invoke('nesviz:getStartupRomPath'),
   selectRomFolder: () => ipcRenderer.invoke('nesviz:selectRomFolder'),
-  startRomFolderScan: (folderPath, opts = null) => ipcRenderer.invoke('nesviz:startRomFolderScan', {
-    folderPath,
+  startRomFolderScan: (folderPaths, opts = null) => ipcRenderer.invoke('nesviz:startRomFolderScan', {
+    folderPaths,
     force: !!opts?.force
   }),
   getRomFolderCache: () => ipcRenderer.invoke('nesviz:getRomFolderCache'),
+  getRomListUiState: () => ipcRenderer.invoke('nesviz:romlist:getUiState'),
+  setRomListUiState: (state) => ipcRenderer.invoke('nesviz:romlist:setUiState', state),
   openCdl: () => ipcRenderer.invoke('nesviz:openCdl'),
   runStaticAnalysis: () => ipcRenderer.invoke('nesviz:runStaticAnalysis'),
+  loadActiveAnalysisCache: () => ipcRenderer.invoke('nesviz:loadActiveAnalysisCache'),
   getTimeline: () => ipcRenderer.invoke('nesviz:getTimeline'),
   getBlock: (blockId) => ipcRenderer.invoke('nesviz:getBlock', { blockId }),
+  getBlockVsaDebug: (blockId) => ipcRenderer.invoke('nesviz:getBlockVsaDebug', { blockId }),
   getBlocks: (blockIds) => ipcRenderer.invoke('nesviz:getBlocks', { blockIds }),
   getArtifacts: () => ipcRenderer.invoke('nesviz:getArtifacts'),
   getPrgBytes: (romStart, romEnd) => ipcRenderer.invoke('nesviz:getPrgBytes', { romStart, romEnd }),
   getAnalysisLog: () => ipcRenderer.invoke('nesviz:getAnalysisLog'),
+  copyText: (text) => ipcRenderer.invoke('nesviz:copyText', { text }),
   getMemoryMapData: () => ipcRenderer.invoke('nesviz:getMemoryMapData'),
+  getHeatmapData: () => ipcRenderer.invoke('nesviz:getHeatmapData'),
+  getMarkovMapData: (options) => ipcRenderer.invoke('nesviz:getMarkovMapData', options),
   getGraphData: () => ipcRenderer.invoke('nesviz:getGraphData'),
+  getGraphLayoutCache: () => ipcRenderer.invoke('nesviz:getGraphLayoutCache'),
+  saveGraphLayoutCache: (payload) => ipcRenderer.invoke('nesviz:saveGraphLayoutCache', payload),
+  getPreferencesAnalysisCacheStats: () => ipcRenderer.invoke('nesviz:preferences:getAnalysisCacheStats'),
+  clearPreferencesAnalysisCache: () => ipcRenderer.invoke('nesviz:preferences:clearAnalysisCache'),
 
   getTuningState: () => ipcRenderer.invoke('nesviz:getTuningState'),
   setTuningState: (patch) => ipcRenderer.invoke('nesviz:setTuningState', { patch }),
   resetTuningState: () => ipcRenderer.invoke('nesviz:resetTuningState'),
+  markovTrainOpcodeModel: (options) => ipcRenderer.invoke('nesviz:markovTrainOpcodeModel', options),
 
   onTuningUpdated: (callback) => {
     const listener = (_evt, payload) => callback(payload);
@@ -44,13 +56,13 @@ contextBridge.exposeInMainWorld('nesviz', {
   // Labels window needs to read the current ROM's labels.
   getActiveLabels: () => ipcRenderer.invoke('nesviz:getActiveLabels'),
 
-  setBookmark: (site, set) => ipcRenderer.invoke('nesviz:setBookmark', {
-    site,
+  setBookmarkAtRomOff: (romOff, set) => ipcRenderer.invoke('nesviz:setBookmarkAtRomOff', {
+    romOff,
     set: !!set
   }),
 
-  setLabel: (site, label) => ipcRenderer.invoke('nesviz:setLabel', {
-    site,
+  setRomLabel: (romOff, label) => ipcRenderer.invoke('nesviz:setRomLabel', {
+    romOff,
     label
   }),
 
@@ -108,6 +120,18 @@ contextBridge.exposeInMainWorld('nesviz', {
     const listener = () => callback();
     ipcRenderer.on('nesviz:memoryMapDataChanged', listener);
     return () => ipcRenderer.removeListener('nesviz:memoryMapDataChanged', listener);
+  },
+
+  onHeatmapDataChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('nesviz:heatmapDataChanged', listener);
+    return () => ipcRenderer.removeListener('nesviz:heatmapDataChanged', listener);
+  },
+
+  onMarkovMapDataChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('nesviz:markovMapDataChanged', listener);
+    return () => ipcRenderer.removeListener('nesviz:markovMapDataChanged', listener);
   },
 
   onGraphDataChanged: (callback) => {

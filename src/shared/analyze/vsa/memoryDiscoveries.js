@@ -4,6 +4,7 @@ import { deriveAddressPredicates } from './addressPredicates.js';
 import { buildGroupMembership } from './groupMembership.js';
 import { buildDiscoveryGroups } from './discoveryGroups.js';
 import { buildGroupIndexes } from './groupIndexes.js';
+import { buildOamDmaTransfers } from './oamDmaTransfers.js';
 
 export function buildMemoryDiscoveries({ observationsResult, vsaDataflow, blockContextIndex = null, prgBytes = null, blocks = [], edges = [] }) {
   const streamFootprints = buildStreamFootprints({ observationsResult, vsaDataflow, prgBytes, blocks, edges });
@@ -12,11 +13,12 @@ export function buildMemoryDiscoveries({ observationsResult, vsaDataflow, blockC
   const groupMembership = buildGroupMembership({ addressFacts, addressPredicates });
   const discoveryGroups = buildDiscoveryGroups({ addressFacts, groupMembership });
   const groupIndexes = buildGroupIndexes({ groups: discoveryGroups.groups });
+  const oamDmaTransfers = buildOamDmaTransfers({ observationsResult, blockContextIndex });
   return {
-    version: 2,
+    version: 3,
     blockContextIndex: blockContextIndex ? {
-      blockFamiliesById: blockContextIndex.blockFamiliesByIdObject || {},
-      blockFunctionIdsById: blockContextIndex.blockFunctionIdsByIdObject || {}
+      rawBlockFamiliesById: blockContextIndex.rawBlockFamiliesByIdObject || {},
+      rawBlockFunctionIdsById: blockContextIndex.rawBlockFunctionIdsByIdObject || {}
     } : null,
     streamFootprints: streamFootprints.footprints,
     addressFacts: addressFacts.addressFactsByKey,
@@ -24,13 +26,15 @@ export function buildMemoryDiscoveries({ observationsResult, vsaDataflow, blockC
     groupMembership,
     groups: discoveryGroups.groups,
     groupIndexes,
+    oamDmaTransfers: oamDmaTransfers.transfers,
     stats: {
       ...streamFootprints.stats,
       ...addressFacts.stats,
       ...addressPredicates.stats,
       ...groupMembership.stats,
       ...discoveryGroups.stats,
-      ...groupIndexes.stats
+      ...groupIndexes.stats,
+      ...oamDmaTransfers.stats
     }
   };
 }

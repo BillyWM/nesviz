@@ -12,7 +12,7 @@ export function Timeline({ timeline, blocksById, selectedBlockId, onSelectBlock,
   return (
     <div className="nv-timeline">
       {timeline.map((item, idx) => {
-        if (item.type === 'code') {
+        if (item.type === 'code' && item.blockId) {
           const b = blocksById.get(item.blockId);
           const inst = b?.instances?.[0];
           const firstAsm = b?.firstAsm || b?.lines?.[0]?.asm || '';
@@ -35,7 +35,7 @@ export function Timeline({ timeline, blocksById, selectedBlockId, onSelectBlock,
           );
         }
 
-        const label = item.type === 'data' ? 'data' : 'unknown';
+        const label = item.type === 'code' ? 'code' : item.type === 'data' ? 'data' : 'unknown';
         return (
           <div
             key={`${item.type}:${item.romStart}:${idx}`}

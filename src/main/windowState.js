@@ -1,12 +1,7 @@
 import { screen } from 'electron';
 
 import { getWindowState, getWindowStateSync, setWindowState } from './userDataStore.js';
-
-function clamp(n, lo, hi) {
-  if (n < lo) return lo;
-  if (n > hi) return hi;
-  return n;
-}
+import { clamp } from '../shared/utils/numberUtils.js';
 
 function getUnionWorkArea() {
   // Work around multi-monitor by building a coarse union rect.

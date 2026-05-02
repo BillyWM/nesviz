@@ -1,4 +1,3 @@
-import { hex4 } from '../../cpu6502/fmt.js';
 import { extractJumpTableSignals } from './jumpTableSignals.js';
 import { scoreJumpTableSignals } from './jumpTableScoring.js';
 
@@ -14,8 +13,16 @@ export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteSta
   const artifacts = [];
   const newSeedItems = [];
   const syntheticEdges = [];
+  const seenSiteRomOffs = new Set();
 
   for (const site of unresolvedSites) {
+    if (site?.kind !== 'jmp_ind') continue;
+    if (!Number.isFinite(site.romOff)) continue;
+
+    const siteRomOff = site.romOff | 0;
+    if (seenSiteRomOffs.has(siteRomOff)) continue;
+    seenSiteRomOffs.add(siteRomOff);
+
     const pc = site.pc & 0xffff;
     const s = site?.siteKey ? siteStatesBySiteKey?.get(String(site.siteKey)) : null;
 
@@ -23,8 +30,8 @@ export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteSta
     const scored = scoreJumpTableSignals(signals);
     if (!scored.shouldEmit) continue;
 
-    // Build an artifact that always shows what we found, even if we couldn't decode concrete targets. 🤖
-    const id = `jt:${site.siteKey || hex4(pc)}`;
+    // Jump-table artifacts are physical ROM observations. Identity and navigation use the exact site ROM offset.
+    const id = `jt:${siteRomOff}`;
     const targets = signals.targets || [];
 
     artifacts.push({
@@ -34,7 +41,7 @@ export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteSta
       confidence: scored.confidence, // 'certain' | 'probable' | 'weak' 🤖
       score: scored.score,
       sitePc: pc,
-      siteBlockId: site.blockId,
+      siteRomOff,
       ptrAddr: signals.ptrAddr,
       indexSource: signals.indexSource,
       shape: signals.shape,
@@ -68,7 +75,7 @@ export function recognizeJumpTables({ prgBytes, mapper, unresolvedSites, siteSta
           const ctxKey = mapper.fetchCtxKey ? mapper.fetchCtxKey(seed.fetchCtx) : (seed.fetchCtx?.key || 'default');
           const siteKey = `${ctxKey}:${(seed.cpuAddr & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
           const toId = blocksByStartSite.get(siteKey) || null;
-          if (toId) syntheticEdges.push({ from: site.blockId, to: toId, kind: 'jump_table' });
+          if (toId) syntheticEdges.push({ from: site.rawBlockId, to: toId, kind: 'jump_table' });
         }
       }
     }

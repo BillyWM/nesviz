@@ -22,8 +22,8 @@ export function BlockView({ block }) {
       </div>
 
       <div className="nv-block-lines">
-        {block.lines.map((line) => (
-          <div key={line.siteKey || `${line.cpuAddr}:${line.romOff}`} className="nv-line">
+        {block.lines.map((line, index) => (
+          <div key={typeof line.romOff === 'number' ? `rom:${line.romOff}` : `${line.cpuAddr}:${index}`} className="nv-line">
             <div className="nv-col-rom">{hex6(line.romOff)}</div>
             <div className="nv-col-cpu">${hex4(line.cpuAddr)}</div>
             <div className="nv-col-bytes">{line.bytesText}</div>

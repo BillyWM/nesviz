@@ -1,32 +1,7 @@
-function addToSet(map, key, value) {
-  let set = map.get(key);
-  if (!set) {
-    set = new Set();
-    map.set(key, set);
-  }
-  set.add(value);
-}
-
-
-function addMany(targetSet, values) {
-  for (const value of values || []) targetSet.add(value);
-}
-
-function normalizePhysicalRom(physicalRom) {
-  if (!physicalRom || typeof physicalRom !== 'object') return { kind: 'unknown', romOffsets: [] };
-  const vals = Array.isArray(physicalRom.romOffsets)
-    ? Array.from(new Set(physicalRom.romOffsets
-        .map((off) => (typeof off === 'number' ? off : Number(off)))
-        .filter((off) => Number.isFinite(off) && off >= 0)
-        .map((off) => off >>> 0))).sort((a, b) => a - b)
-    : [];
-  if (!vals.length) return { kind: 'unknown', romOffsets: [] };
-  return { kind: vals.length === 1 ? 'exact' : (physicalRom.kind === 'set' ? 'set' : 'exact'), romOffsets: vals };
-}
-function normalizeAddr(space, addr) {
-  if (space === 'rom') return (addr >>> 0);
-  return addr & 0xffff;
-}
+import { addToSet } from '../../utils/collectionMapUtils.js';
+import { addMany } from '../../utils/collectionUtils.js';
+import { normalizeAddr } from '../../utils/addressNormalizeUtils.js';
+import { normalizePhysicalRom } from '../../utils/romIdentityUtils.js';
 
 function makeFact(space, addr) {
   const normalizedAddr = normalizeAddr(space, addr);
@@ -39,9 +14,9 @@ function makeFact(space, addr) {
     writeObservationIds: new Set(),
     compareObservationIds: new Set(),
     possibleCompareObservationIds: new Set(),
-    readBlockIds: new Set(),
-    possibleReadBlockIds: new Set(),
-    writeBlockIds: new Set(),
+    readRawBlockIds: new Set(),
+    possibleReadRawBlockIds: new Set(),
+    writeRawBlockIds: new Set(),
     readByFunctionIds: new Set(),
     possibleReadByFunctionIds: new Set(),
     writtenByFunctionIds: new Set(),
@@ -62,8 +37,8 @@ function makeFact(space, addr) {
     possibleRelatedObservationIds: new Set(),
     relatedTraceNodeIds: new Set(),
     possibleRelatedTraceNodeIds: new Set(),
-    touchingBlockIds: new Set(),
-    possibleTouchingBlockIds: new Set(),
+    touchingRawBlockIds: new Set(),
+    possibleTouchingRawBlockIds: new Set(),
     touchingFunctionIds: new Set(),
     possibleTouchingFunctionIds: new Set(),
     streamFootprintIds: new Set(),
@@ -85,10 +60,10 @@ function getOrCreateFact(factsByKey, space, addr) {
 function mergeContextIntoFact(fact, observation, direction, possible = false) {
   const obsId = String(observation.id);
   (possible ? fact.possibleRelatedObservationIds : fact.relatedObservationIds).add(obsId);
-  if (typeof observation.blockId === 'string') {
-    (possible ? fact.possibleTouchingBlockIds : fact.touchingBlockIds).add(observation.blockId);
-    if (direction === 'read') (possible ? fact.possibleReadBlockIds : fact.readBlockIds).add(observation.blockId);
-    if (direction === 'write') fact.writeBlockIds.add(observation.blockId);
+  if (typeof observation.rawBlockId === 'string') {
+    (possible ? fact.possibleTouchingRawBlockIds : fact.touchingRawBlockIds).add(observation.rawBlockId);
+    if (direction === 'read') (possible ? fact.possibleReadRawBlockIds : fact.readRawBlockIds).add(observation.rawBlockId);
+    if (direction === 'write') fact.writeRawBlockIds.add(observation.rawBlockId);
   }
   for (const family of observation.entryFamilies || []) {
     if (direction === 'read') (possible ? fact.possibleReadInFamilies : fact.readInFamilies).add(family);
@@ -110,14 +85,14 @@ function normalizeTraceMap(dataflowMap) {
 function toPlainFact(fact) {
   const allReadObservationIds = Array.from(new Set([...fact.readObservationIds, ...fact.possibleReadObservationIds])).sort();
   const allCompareObservationIds = Array.from(new Set([...fact.compareObservationIds, ...fact.possibleCompareObservationIds])).sort();
-  const allReadBlockIds = Array.from(new Set([...fact.readBlockIds, ...fact.possibleReadBlockIds])).sort();
+  const allReadBlockIds = Array.from(new Set([...fact.readRawBlockIds, ...fact.possibleReadRawBlockIds])).sort();
   const allReadByFunctionIds = Array.from(new Set([...fact.readByFunctionIds, ...fact.possibleReadByFunctionIds])).sort();
   const allReadInFamilies = Array.from(new Set([...fact.readInFamilies, ...fact.possibleReadInFamilies])).sort();
   const allTraceIds = Array.from(new Set([...fact.traceIds, ...fact.possibleTraceIds])).sort();
   const allFlowsToIoAddrs = Array.from(new Set([...fact.flowsToIoAddrs, ...fact.possibleFlowsToIoAddrs])).sort((a, b) => a - b);
   const allRelatedObservationIds = Array.from(new Set([...fact.relatedObservationIds, ...fact.possibleRelatedObservationIds])).sort();
   const allRelatedTraceNodeIds = Array.from(new Set([...fact.relatedTraceNodeIds, ...fact.possibleRelatedTraceNodeIds])).sort();
-  const allTouchingBlockIds = Array.from(new Set([...fact.touchingBlockIds, ...fact.possibleTouchingBlockIds])).sort();
+  const allTouchingRawBlockIds = Array.from(new Set([...fact.touchingRawBlockIds, ...fact.possibleTouchingRawBlockIds])).sort();
   const allTouchingFunctionIds = Array.from(new Set([...fact.touchingFunctionIds, ...fact.possibleTouchingFunctionIds])).sort();
   return {
     key: fact.key,
@@ -128,9 +103,9 @@ function toPlainFact(fact) {
     writeObservationIds: Array.from(fact.writeObservationIds).sort(),
     compareObservationIds: Array.from(fact.compareObservationIds).sort(),
     possibleCompareObservationIds: Array.from(fact.possibleCompareObservationIds).sort(),
-    readBlockIds: Array.from(fact.readBlockIds).sort(),
-    possibleReadBlockIds: Array.from(fact.possibleReadBlockIds).sort(),
-    writeBlockIds: Array.from(fact.writeBlockIds).sort(),
+    readRawBlockIds: Array.from(fact.readRawBlockIds).sort(),
+    possibleReadRawBlockIds: Array.from(fact.possibleReadRawBlockIds).sort(),
+    writeRawBlockIds: Array.from(fact.writeRawBlockIds).sort(),
     readByFunctionIds: Array.from(fact.readByFunctionIds).sort(),
     possibleReadByFunctionIds: Array.from(fact.possibleReadByFunctionIds).sort(),
     writtenByFunctionIds: Array.from(fact.writtenByFunctionIds).sort(),
@@ -160,9 +135,9 @@ function toPlainFact(fact) {
     relatedTraceNodeIds: Array.from(fact.relatedTraceNodeIds).sort(),
     possibleRelatedTraceNodeIds: Array.from(fact.possibleRelatedTraceNodeIds).sort(),
     allRelatedTraceNodeIds,
-    touchingBlockIds: Array.from(fact.touchingBlockIds).sort(),
-    possibleTouchingBlockIds: Array.from(fact.possibleTouchingBlockIds).sort(),
-    allTouchingBlockIds,
+    touchingRawBlockIds: Array.from(fact.touchingRawBlockIds).sort(),
+    possibleTouchingRawBlockIds: Array.from(fact.possibleTouchingRawBlockIds).sort(),
+    allTouchingRawBlockIds,
     touchingFunctionIds: Array.from(fact.touchingFunctionIds).sort(),
     possibleTouchingFunctionIds: Array.from(fact.possibleTouchingFunctionIds).sort(),
     allTouchingFunctionIds,
@@ -245,20 +220,29 @@ export function buildAddressFacts({ observationsResult, vsaDataflow, streamFootp
   for (const footprint of footprints) {
     if (footprint?.space !== 'rom') continue;
     const definite = Array.isArray(footprint.memberRomOffsets) ? footprint.memberRomOffsets : [];
+    const possible = Array.isArray(footprint.possibleRomOffsets) ? footprint.possibleRomOffsets : [];
     for (const romOff of definite) {
       const fact = getOrCreateFact(factsByKey, 'rom', romOff >>> 0);
       fact.streamFootprintIds.add(String(footprint.id));
-      addMany(fact.touchingBlockIds, footprint.touchingBlockIds || []);
+      addMany(fact.touchingRawBlockIds, footprint.touchingRawBlockIds || []);
       addMany(fact.touchingFunctionIds, footprint.touchingFunctionIds || []);
       addMany(fact.readInFamilies, footprint.entryFamilies || []);
     }
+    for (const romOff of possible) {
+      const fact = getOrCreateFact(factsByKey, 'rom', romOff >>> 0);
+      if (definite.includes(romOff >>> 0)) continue;
+      fact.possibleStreamFootprintIds.add(String(footprint.id));
+      addMany(fact.possibleTouchingRawBlockIds, footprint.touchingRawBlockIds || []);
+      addMany(fact.possibleTouchingFunctionIds, footprint.touchingFunctionIds || []);
+      addMany(fact.possibleReadInFamilies, footprint.entryFamilies || []);
+    }
     const range = footprint.boundingRange;
-    if (range && Number.isFinite(range.start) && Number.isFinite(range.end) && (range.end - range.start) <= 64) {
+    if (!possible.length && range && Number.isFinite(range.start) && Number.isFinite(range.end) && (range.end - range.start) <= 64) {
       for (let off = range.start >>> 0; off <= (range.end >>> 0); off++) {
         const fact = getOrCreateFact(factsByKey, 'rom', off >>> 0);
         if (definite.includes(off >>> 0)) continue;
         fact.possibleStreamFootprintIds.add(String(footprint.id));
-        addMany(fact.possibleTouchingBlockIds, footprint.touchingBlockIds || []);
+        addMany(fact.possibleTouchingRawBlockIds, footprint.touchingRawBlockIds || []);
         addMany(fact.possibleTouchingFunctionIds, footprint.touchingFunctionIds || []);
         addMany(fact.possibleReadInFamilies, footprint.entryFamilies || []);
       }
@@ -275,8 +259,8 @@ export function buildAddressFacts({ observationsResult, vsaDataflow, streamFootp
     addMany(fact.possibleRelatedObservationIds, (item.possibleObservationIds || []).map(String));
     addMany(fact.relatedTraceNodeIds, (item.traceNodeIds || []).map(String));
     addMany(fact.possibleRelatedTraceNodeIds, (item.possibleTraceNodeIds || []).map(String));
-    addMany(fact.touchingBlockIds, item.blockIds || []);
-    addMany(fact.possibleTouchingBlockIds, item.possibleBlockIds || []);
+    addMany(fact.touchingRawBlockIds, item.rawBlockIds || []);
+    addMany(fact.possibleTouchingRawBlockIds, item.possibleRawBlockIds || []);
     addMany(fact.touchingFunctionIds, item.functionIds || []);
     addMany(fact.possibleTouchingFunctionIds, item.possibleFunctionIds || []);
     addMany(fact.readInFamilies, item.entryFamilies || []);

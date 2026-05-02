@@ -1,6 +1,6 @@
 {
   "name": "nesviz",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "description": "NESViz - An NES reverse-engineering tool",
   "main": "./out/main/index.js",
   "author": "William Wenge-Murphy",
@@ -21,8 +21,6 @@
     "@electron-toolkit/utils": "^4.0.0"
   },
   "devDependencies": {
-    "@electron-toolkit/eslint-config": "^2.1.0",
-    "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@tanstack/react-virtual": "^3.13.18",
     "@xyflow/react": "^12.10.2",
     "@vitejs/plugin-react": "^5.1.1",
@@ -30,11 +28,6 @@
     "electron": "^39.2.6",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "prettier": "^3.7.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "sass": "^1.97.3",

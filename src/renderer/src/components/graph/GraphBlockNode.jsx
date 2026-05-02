@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 
 import { GRAPH_NODE_CSS_VARS } from '../../util/graphGeometry.js'
+import { fmtHex } from '../../../../shared/utils/hexUtils.js'
 
 function positionForSide(side, fallback) {
   if (side === 'NORTH') return Position.Top
@@ -18,11 +19,6 @@ function portStyle(port, side) {
     style.left = `${port.left}px`
   }
   return style
-}
-
-function fmtHex(value, width) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '?'.repeat(width)
-  return (value >>> 0).toString(16).toUpperCase().padStart(width, '0')
 }
 
 function GraphBlockNode({ data }) {
@@ -74,7 +70,7 @@ function GraphBlockNode({ data }) {
       <div className="graph-node-lines">
         {lines.map((line, index) => (
           <div
-            key={`${data?.id || 'node'}:${line?.siteKey || 'line'}:${index}`}
+            key={`${data?.id || 'node'}:${typeof line?.romOff === 'number' ? `rom:${line.romOff}` : 'line'}:${index}`}
             className="graph-node-line"
           >
             <div className="graph-node-line-cpu">${fmtHex(line?.cpuAddr, 4)}</div>

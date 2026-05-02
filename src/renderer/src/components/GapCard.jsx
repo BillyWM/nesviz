@@ -5,7 +5,7 @@ function rangeText(start, end) {
 }
 
 export function GapCard({ item, showBytes = false, bytesText = '', isLoadingBytes = false, onContextMenuGap, showDebugInfo = false, debugReasons = [] }) {
-  const label = item.type === 'data' ? 'data' : 'unknown';
+  const label = item.type === 'code' ? 'code' : item.type === 'data' ? 'data' : 'unknown';
   return (
     <div
       className={`nv-card nv-gap size-${item.sizeClass}`}

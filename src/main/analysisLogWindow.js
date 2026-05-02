@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+import { loadRendererWindow } from './utils/windowLoaderUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,27 +14,6 @@ let analysisLogLines = [];
 
 export function setMainWindow(win) {
   mainWindow = win;
-}
-
-function getDevRendererUrl() {
-  return (
-    process.env.VITE_DEV_SERVER_URL ||
-    process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ||
-    process.env.ELECTRON_RENDERER_URL ||
-    null
-  );
-}
-
-function loadAnalysisLogWindow(win) {
-  const devUrl = getDevRendererUrl();
-  if (devUrl) {
-    const base = devUrl.replace(/\/+$/, '');
-    win.loadURL(`${base}/analysislog.html`);
-    return;
-  }
-
-  const htmlPath = path.join(__dirname, '../renderer/analysislog.html');
-  win.loadFile(htmlPath);
 }
 
 function broadcastAnalysisLog() {
@@ -95,7 +75,7 @@ export function showAnalysisLogWindow() {
     analysisLogWindow = null;
   });
 
-  loadAnalysisLogWindow(analysisLogWindow);
+  loadRendererWindow(analysisLogWindow, 'analysislog.html', __dirname);
   analysisLogWindow.webContents.once('did-finish-load', () => {
     broadcastAnalysisLog();
   });

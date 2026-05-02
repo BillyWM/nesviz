@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
+import { loadRendererWindow } from './utils/windowLoaderUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,30 +12,23 @@ let mainWindow = null;
 let romListWindow = null;
 let pendingCommand = null;
 
+const DEFAULT_ROM_LIST_UI_STATE = Object.freeze({
+  filterState: {
+    nameQuery: ''
+  },
+  sort: {
+    key: null,
+    dir: 'asc'
+  }
+});
+
+let romListUiState = {
+  filterState: { ...DEFAULT_ROM_LIST_UI_STATE.filterState },
+  sort: { ...DEFAULT_ROM_LIST_UI_STATE.sort }
+};
+
 export function setMainWindow(win) {
   mainWindow = win;
-}
-
-function getDevRendererUrl() {
-  return (
-    process.env.VITE_DEV_SERVER_URL ||
-    process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ||
-    process.env.ELECTRON_RENDERER_URL ||
-    null
-  );
-}
-
-function loadRomListWindow(win) {
-  const devUrl = getDevRendererUrl();
-  if (devUrl) {
-    const base = devUrl.replace(/\/+$/, '');
-    win.loadURL(`${base}/romlist.html`);
-    return;
-  }
-
-  // In production builds, electron-vite outputs renderer assets under ../renderer.
-  const htmlPath = path.join(__dirname, '../renderer/romlist.html');
-  win.loadFile(htmlPath);
 }
 
 function sendCommand(cmd) {
@@ -44,6 +38,32 @@ function sendCommand(cmd) {
   } catch {
     // Ignore send failures.
   }
+}
+
+function normalizeRomListFilterState(raw) {
+  const nameQuery = typeof raw?.nameQuery === 'string' ? raw.nameQuery : '';
+  return { nameQuery };
+}
+
+function normalizeRomListSort(raw) {
+  const allowedKeys = new Set(['filename', 'mapperName', 'prgBytes', 'chrBytes']);
+  const key = allowedKeys.has(raw?.key) ? raw.key : null;
+  const dir = raw?.dir === 'desc' ? 'desc' : 'asc';
+  return { key, dir };
+}
+
+function normalizeRomListUiState(raw) {
+  return {
+    filterState: normalizeRomListFilterState(raw?.filterState),
+    sort: normalizeRomListSort(raw?.sort)
+  };
+}
+
+function cloneRomListUiState() {
+  return {
+    filterState: { ...romListUiState.filterState },
+    sort: { ...romListUiState.sort }
+  };
 }
 
 export function showRomListWindow({ selectFolder = false } = {}) {
@@ -89,10 +109,19 @@ export function showRomListWindow({ selectFolder = false } = {}) {
     }
   });
 
-  loadRomListWindow(romListWindow);
+  loadRendererWindow(romListWindow, 'romlist.html', __dirname);
 }
 
 export function registerRomListIpc() {
+  ipcMain.handle('nesviz:romlist:getUiState', () => {
+    return cloneRomListUiState();
+  });
+
+  ipcMain.handle('nesviz:romlist:setUiState', (_evt, payload) => {
+    romListUiState = normalizeRomListUiState(payload);
+    return { ok: true, state: cloneRomListUiState() };
+  });
+
   ipcMain.on('nesviz:romlist:openRom', (_evt, { filepath }) => {
     if (!filepath) return;
     if (mainWindow && !mainWindow.isDestroyed()) {

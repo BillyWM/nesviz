@@ -1,24 +1,12 @@
+import { parseBytesText } from '../../utils/byteTextUtils.js';
+import { u16le } from '../../utils/binaryReadUtils.js';
+import { clamp8 } from '../../utils/numberUtils.js';
+
 // Constant recognizers.
 //
 // These are intentionally strict and local (no full VSA yet): we only recognize
 // patterns where values are provably constant based on immediate loads + simple
 // constant-preserving ops within the same coalesced display block.
-
-function parseBytesText(bytesText) {
-  if (!bytesText || typeof bytesText !== 'string') return [];
-  const parts = bytesText.split(/\s+/).filter(Boolean);
-  const out = [];
-  for (const p of parts) {
-    const v = Number.parseInt(p, 16);
-    if (!Number.isFinite(v)) return [];
-    out.push(v & 0xff);
-  }
-  return out;
-}
-
-function u16le(bytes, off) {
-  return ((bytes[off] | (bytes[off + 1] << 8)) & 0xffff) >>> 0;
-}
 
 function imm8FromLine(ln) {
   if (!ln || ln.mode !== 'imm') return null;
@@ -57,16 +45,6 @@ function makePoiId(kind, romOffStart, romOffEnd) {
   return `${kind}:${(romOffStart >>> 0).toString(16)}-${(romOffEnd >>> 0).toString(16)}`;
 }
 
-function anchorFromLine(ln) {
-  return {
-    romOff: typeof ln?.romOff === 'number' ? (ln.romOff >>> 0) : null,
-    cpuAddr: typeof ln?.cpuAddr === 'number' ? (ln.cpuAddr & 0xffff) : null
-  };
-}
-
-function clamp8(n) {
-  return (n & 0xff) >>> 0;
-}
 
 function constVal(v, originIdx) {
   if (v == null) return null;
@@ -259,11 +237,6 @@ function buildSetsScrollPoi({ block, lines, scrollPair, addrPair }) {
   const basis = basisSpanFromLines(lines, startIdx, endIdx);
   if (!basis) return null;
 
-  // Anchor / display at the beginning of the recognized span.
-  const spanStartLine = lines[startIdx];
-  const anchor = anchorFromLine(spanStartLine);
-  if (anchor.romOff == null) return null;
-
   const meta = {
     scrollX: scrollPair.storeA.value,
     scrollY: scrollPair.storeB.value
@@ -284,10 +257,6 @@ function buildSetsScrollPoi({ block, lines, scrollPair, addrPair }) {
     kind: 'setsScroll',
     label: 'Sets scroll',
     pill: 'sets scroll',
-    anchorRomOff: basis.start,
-    anchorCpuAddr: anchor.cpuAddr,
-    // Link to the containing display block, then zoom to anchorRomOff.
-    anchorBlockId: block.id,
     basis: { romOffSpan: basis },
     meta
   };
@@ -296,9 +265,6 @@ function buildSetsScrollPoi({ block, lines, scrollPair, addrPair }) {
 function buildAlignmentNopsPoi({ block, lines, startIdx, endIdx, nextIdx }) {
   const basis = basisSpanFromLines(lines, startIdx, endIdx);
   if (!basis) return null;
-
-  const anchor = anchorFromLine(lines[startIdx]);
-  if (anchor.romOff == null) return null;
 
   const next = lines[nextIdx];
   const meta = {
@@ -314,10 +280,6 @@ function buildAlignmentNopsPoi({ block, lines, startIdx, endIdx, nextIdx }) {
     label: 'Alignment NOPs',
     pill: 'alignment NOPs',
     // Anchor at the beginning of the NOP run.
-    anchorRomOff: basis.start,
-    anchorCpuAddr: anchor.cpuAddr,
-    // Link to the containing display block, then zoom to anchorRomOff.
-    anchorBlockId: block.id,
     basis: { romOffSpan: basis },
     meta
   };

@@ -171,22 +171,27 @@ function applyRomOverride(info, romOverride) {
   return next;
 }
 
+const MAPPER_DISPLAY_NAMES = Object.freeze({
+  0: 'NROM',
+  1: 'MMC1',
+  2: 'UxROM',
+  3: 'CNROM',
+  4: 'MMC3',
+  5: 'MMC5',
+  7: 'AxROM',
+  9: 'MMC2',
+  10: 'MMC4',
+  13: 'CPROM',
+  34: 'BNROM / NINA-001',
+  66: 'GxROM',
+  94: 'UN1ROM',
+  180: 'UNROM-180',
+  185: 'CNROM'
+});
+
 export function getMapperDisplayName(mapperNumber) {
-  switch (mapperNumber | 0) {
-    case 0: return 'NROM';
-    case 1: return 'MMC1';
-    case 2: return 'UxROM';
-    case 3: return 'CNROM';
-    case 4: return 'MMC3';
-    case 7: return 'AxROM';
-    case 13: return 'CPROM';
-    case 34: return 'BNROM / NINA-001';
-    case 66: return 'GxROM';
-    case 94: return 'UN1ROM';
-    case 180: return 'UNROM-180';
-    case 185: return 'CNROM';
-    default: return `MAPPER ${mapperNumber | 0}`;
-  }
+  const key = mapperNumber | 0;
+  return MAPPER_DISPLAY_NAMES[key] || `MAPPER ${key}`;
 }
 
 function infoForMapper34(header) {
@@ -310,9 +315,21 @@ function classifyMapperFromHeaderBase(header) {
         mapperFamily: 'MMC3',
         boardFamily: submapper === 1 ? 'MMC6' : 'MMC3',
         boardName: submapper === 1 ? 'MMC6' : 'MMC3',
-        mapperName: 'MMC3',
+        mapperName: submapper === 1 ? 'MMC6' : 'MMC3',
         prgWindowModel: 'switch-8k-mixed',
         prgSwapUnitBytes: 8 * 1024,
+        busConflicts: 'none',
+        busConflictSource: 'family-default'
+      });
+
+    case 5:
+      return makeInfo({
+        mapperFamily: 'MMC5',
+        boardFamily: 'MMC5',
+        boardName: 'MMC5',
+        mapperName: 'MMC5',
+        prgWindowModel: 'unknown',
+        prgSwapUnitBytes: null,
         busConflicts: 'none',
         busConflictSource: 'family-default'
       });
@@ -332,6 +349,30 @@ function classifyMapperFromHeaderBase(header) {
       else if (submapper === 2) info = setBusConflict(info, 'and', 'explicit-submapper');
       return info;
     }
+
+    case 9:
+      return makeInfo({
+        mapperFamily: 'MMC2',
+        boardFamily: 'MMC2',
+        boardName: 'MMC2',
+        mapperName: 'MMC2',
+        prgWindowModel: 'unknown',
+        prgSwapUnitBytes: null,
+        busConflicts: 'none',
+        busConflictSource: 'family-default'
+      });
+
+    case 10:
+      return makeInfo({
+        mapperFamily: 'MMC4',
+        boardFamily: 'MMC4',
+        boardName: 'MMC4',
+        mapperName: 'MMC4',
+        prgWindowModel: 'unknown',
+        prgSwapUnitBytes: null,
+        busConflicts: 'none',
+        busConflictSource: 'family-default'
+      });
 
     case 13:
       return makeInfo({
@@ -414,7 +455,57 @@ export function classifyMapperFromHeader(header) {
   return resolveMapperInfo(header, null);
 }
 
-export function isCurrentStaticAnalysisTargetMapper(mapperNumber) {
-  const m = mapperNumber | 0;
-  return m === 0 || m === 1 || m === 2 || m === 3 || m === 4 || m === 7 || m === 13 || m === 34 || m === 66 || m === 94 || m === 185;
+const LISTABLE_MAPPER_FAMILIES = new Set([
+  'NROM',
+  'MMC1',
+  'UxROM',
+  'CNROM',
+  'CNROM-185',
+  'MMC2',
+  'MMC3',
+  'MMC4',
+  'MMC5',
+  'AxROM',
+  'CPROM',
+  'BNROM',
+  'NINA-001',
+  'GxROM',
+  'UN1ROM'
+]);
+
+const ANALYZABLE_MAPPER_KIND_BY_FAMILY = Object.freeze({
+  NROM: 'NROM',
+  MMC1: 'MMC1',
+  UxROM: 'UxROM',
+  CNROM: 'CNROM',
+  'CNROM-185': 'CNROM',
+  AxROM: 'AxROM',
+  CPROM: 'CPROM',
+  BNROM: 'BNROM',
+  GxROM: 'GxROM',
+  UN1ROM: 'UN1ROM'
+});
+
+export function getStaticAnalysisSupportInfo(analysisMapper) {
+  const mapperFamily = analysisMapper?.mapperFamily || null;
+  const boardFamily = analysisMapper?.boardFamily || null;
+
+  if (!mapperFamily) {
+    return { listable: false, isAnalyzable: false, analysisKind: null };
+  }
+
+  if (mapperFamily === 'MMC3') {
+    if (boardFamily === 'MMC3') {
+      return { listable: true, isAnalyzable: true, analysisKind: 'MMC3' };
+    }
+    return { listable: true, isAnalyzable: false, analysisKind: null };
+  }
+
+  const analysisKind = ANALYZABLE_MAPPER_KIND_BY_FAMILY[mapperFamily] || null;
+  const listable = LISTABLE_MAPPER_FAMILIES.has(mapperFamily);
+  return {
+    listable,
+    isAnalyzable: !!analysisKind,
+    analysisKind
+  };
 }

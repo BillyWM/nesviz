@@ -2,7 +2,6 @@ import { GRAPH_NODE_OUTER_BASE_HEIGHT, GRAPH_NODE_WIDTH } from './graphGeometry.
 import { collapseExactlyCollinearPoints } from './graphPointSimplify.js'
 
 const PORT_SIZE = 8
-const BUNDLE_SPINE_OUTSET = 24
 const DEFAULTS = {
   algorithm: 'layered',
   direction: 'RIGHT',
@@ -12,6 +11,16 @@ const DEFAULTS = {
   edgeEdgeBetweenLayers: 28,
   portPortSpacing: 10,
   edgeNodeSpacing: 26
+}
+
+function describeEdge(edge) {
+  return `${String(edge?.id || '?')} (${String(edge?.source || '?')} -> ${String(edge?.target || '?')})`
+}
+
+function assertFinitePoint(point, edge, label) {
+  if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
+    throw new Error(`Graph edge ${describeEdge(edge)} produced a non-finite ${label} point`)
+  }
 }
 
 function sortPorts(ports) {
@@ -130,34 +139,50 @@ function collectEdgePoints(elkEdge) {
   return dedupePoints(points)
 }
 
-function getPortAnchor(reactNode, laidOutNode, portId, side) {
+function getPortAnchor(edge, reactNode, laidOutNode, portId, side) {
   const ports = side === 'source'
     ? (Array.isArray(reactNode?.data?.sourcePorts) ? reactNode.data.sourcePorts : [])
     : (Array.isArray(reactNode?.data?.targetPorts) ? reactNode.data.targetPorts : [])
   const port = ports.find((entry) => entry?.id === portId) || null
-  if (!port) return null
+  if (!port) {
+    throw new Error(`Graph edge ${describeEdge(edge)} could not find ${side} port ${String(portId)}`)
+  }
 
-  const nodeX = Number.isFinite(laidOutNode?.x) ? laidOutNode.x : (Number.isFinite(reactNode?.position?.x) ? reactNode.position.x : 0)
-  const nodeY = Number.isFinite(laidOutNode?.y) ? laidOutNode.y : (Number.isFinite(reactNode?.position?.y) ? reactNode.position.y : 0)
-  const nodeWidth = Number.isFinite(reactNode?.width) ? reactNode.width : (Number.isFinite(laidOutNode?.width) ? laidOutNode.width : 0)
-  const nodeHeight = Number.isFinite(reactNode?.height) ? reactNode.height : (Number.isFinite(laidOutNode?.height) ? laidOutNode.height : 0)
+  if (!Number.isFinite(laidOutNode?.x) || !Number.isFinite(laidOutNode?.y)) {
+    throw new Error(`Graph edge ${describeEdge(edge)} is missing laid-out ${side} node coordinates`)
+  }
+
+  const nodeX = laidOutNode.x
+  const nodeY = laidOutNode.y
+  const nodeWidth = Number.isFinite(reactNode?.width) ? reactNode.width : (Number.isFinite(laidOutNode?.width) ? laidOutNode.width : null)
+  const nodeHeight = Number.isFinite(reactNode?.height) ? reactNode.height : (Number.isFinite(laidOutNode?.height) ? laidOutNode.height : null)
+  if (!Number.isFinite(nodeWidth) || !Number.isFinite(nodeHeight)) {
+    throw new Error(`Graph edge ${describeEdge(edge)} is missing ${side} node dimensions`)
+  }
+
   const portSide = typeof port?.side === 'string' ? port.side : (side === 'source' ? 'EAST' : 'WEST')
 
   if (portSide === 'NORTH' || portSide === 'SOUTH') {
     const left = Number.isFinite(port?.left) ? port.left : (nodeWidth / 2)
-    return {
+    const point = {
       x: nodeX + left,
       y: portSide === 'SOUTH' ? (nodeY + nodeHeight) : nodeY
     }
+    assertFinitePoint(point, edge, `${side}Anchor`)
+    return point
   }
 
   const top = Number.isFinite(port?.top) ? port.top : null
-  if (!Number.isFinite(top)) return null
+  if (!Number.isFinite(top)) {
+    throw new Error(`Graph edge ${describeEdge(edge)} could not resolve ${side} port top`)
+  }
 
-  return {
+  const point = {
     x: side === 'source' ? (nodeX + nodeWidth) : nodeX,
     y: nodeY + top
   }
+  assertFinitePoint(point, edge, `${side}Anchor`)
+  return point
 }
 
 function forceEdgeEndpoints(edge, points, reactNodesById, laidOutNodesById) {
@@ -166,10 +191,9 @@ function forceEdgeEndpoints(edge, points, reactNodesById, laidOutNodesById) {
   const targetReactNode = reactNodesById.get(edge?.target) || null
   const sourceLaidOutNode = laidOutNodesById.get(edge?.source) || null
   const targetLaidOutNode = laidOutNodesById.get(edge?.target) || null
-  const sourceAnchor = getPortAnchor(sourceReactNode, sourceLaidOutNode, edge?.sourceHandle, 'source')
-  const targetAnchor = getPortAnchor(targetReactNode, targetLaidOutNode, edge?.targetHandle, 'target')
+  const sourceAnchor = getPortAnchor(edge, sourceReactNode, sourceLaidOutNode, edge?.sourceHandle, 'source')
+  const targetAnchor = getPortAnchor(edge, targetReactNode, targetLaidOutNode, edge?.targetHandle, 'target')
 
-  if (!sourceAnchor || !targetAnchor) return exactPoints
   if (!exactPoints.length) return [sourceAnchor, targetAnchor]
 
   exactPoints[0] = sourceAnchor
@@ -178,84 +202,12 @@ function forceEdgeEndpoints(edge, points, reactNodesById, laidOutNodesById) {
   } else {
     exactPoints[exactPoints.length - 1] = targetAnchor
   }
+  exactPoints.forEach((point, index) => assertFinitePoint(point, edge, `finalized[${index}]`))
   return dedupePoints(exactPoints)
 }
 
-function getBundleGroupKey(edge) {
-  return typeof edge?.data?.bundleGroupKey === 'string' && edge.data.bundleGroupKey
-    ? edge.data.bundleGroupKey
-    : null
-}
-
-function buildBundledEdgePoints(groupEdges, reactNodesById, laidOutNodesById) {
-  const routed = new Map()
-  const anchors = []
-
-  for (const edge of Array.isArray(groupEdges) ? groupEdges : []) {
-    const sourceReactNode = reactNodesById.get(edge?.source) || null
-    const targetReactNode = reactNodesById.get(edge?.target) || null
-    const sourceLaidOutNode = laidOutNodesById.get(edge?.source) || null
-    const targetLaidOutNode = laidOutNodesById.get(edge?.target) || null
-    const sourceAnchor = getPortAnchor(sourceReactNode, sourceLaidOutNode, edge?.sourceHandle, 'source')
-    const targetAnchor = getPortAnchor(targetReactNode, targetLaidOutNode, edge?.targetHandle, 'target')
-    if (!sourceAnchor || !targetAnchor) continue
-    anchors.push({ edge, sourceAnchor, targetAnchor })
-  }
-
-  if (anchors.length < 2) return routed
-
-  const first = anchors[0]
-  const sourceEdgeX = first.sourceAnchor.x
-  const sharedTargetX = first.targetAnchor.x
-  const sharedTargetY = first.targetAnchor.y
-
-  const sameSourceSide = anchors.every(({ sourceAnchor }) => sourceAnchor.x === sourceEdgeX)
-  const sameTargetRow = anchors.every(({ targetAnchor }) => targetAnchor.x === sharedTargetX && targetAnchor.y === sharedTargetY)
-  const movingRight = anchors.every(({ sourceAnchor, targetAnchor }) => targetAnchor.x > sourceAnchor.x)
-  const movingLeft = anchors.every(({ sourceAnchor, targetAnchor }) => targetAnchor.x < sourceAnchor.x)
-
-  if (!sameSourceSide || !sameTargetRow) return routed
-  if (!movingRight && !movingLeft) return routed
-
-  const spineX = movingRight
-    ? (sourceEdgeX + BUNDLE_SPINE_OUTSET)
-    : (sourceEdgeX - BUNDLE_SPINE_OUTSET)
-
-  for (const { edge, sourceAnchor, targetAnchor } of anchors) {
-    const points = dedupePoints([
-      sourceAnchor,
-      { x: spineX, y: sourceAnchor.y },
-      { x: spineX, y: sharedTargetY },
-      { x: sharedTargetX, y: sharedTargetY },
-      targetAnchor
-    ])
-    routed.set(edge.id, points)
-  }
-
-  return routed
-}
-
 function applyOutboundBundles(edgeList, reactNodesById, laidOutNodesById, defaultPointsByEdgeId) {
-  const bundledPointsByEdgeId = new Map(defaultPointsByEdgeId)
-  const groups = new Map()
-
-  for (const edge of Array.isArray(edgeList) ? edgeList : []) {
-    const key = getBundleGroupKey(edge)
-    if (!key) continue
-    const group = groups.get(key) || []
-    group.push(edge)
-    groups.set(key, group)
-  }
-
-  for (const groupEdges of groups.values()) {
-    if (!Array.isArray(groupEdges) || groupEdges.length < 2) continue
-    const overrides = buildBundledEdgePoints(groupEdges, reactNodesById, laidOutNodesById)
-    for (const [edgeId, points] of overrides.entries()) {
-      bundledPointsByEdgeId.set(edgeId, points)
-    }
-  }
-
-  return bundledPointsByEdgeId
+  return new Map(defaultPointsByEdgeId)
 }
 
 function emitProgress(onProgress, stepId, patch = {}) {

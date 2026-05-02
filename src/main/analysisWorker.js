@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
-import { analyzeStaticFixedSwitch16k, analyzeStaticFixedSwitch32k, analyzeStaticMmc1, analyzeStaticNrom } from '../shared/analyze/analyzeStatic.js';
+import { analyzeStaticFixedSwitch16k, analyzeStaticFixedSwitch32k, analyzeStaticMmc1, analyzeStaticMmc3, analyzeStaticNrom } from '../shared/analyze/analyzeStatic.js';
 import { buildDisplayAnalysis } from '../shared/analyze/display/buildDisplayAnalysis.js';
 
 async function run() {
@@ -10,6 +10,7 @@ async function run() {
     const isFixedSwitch16k = family === 'UxROM' || family === 'UN1ROM';
     const isFixedSwitch32k = family === 'AxROM' || family === 'BNROM' || family === 'GxROM';
     const isMmc1 = family === 'MMC1';
+    const isMmc3 = family === 'MMC3';
 
     const onVsaProgress = (p) => {
       parentPort?.postMessage({
@@ -20,12 +21,14 @@ async function run() {
       });
     };
 
-    const raw = isFixedSwitch16k
-      ? await analyzeStaticFixedSwitch16k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.fixedSwitch16k || null })
+    const rawAnalysis = isFixedSwitch16k
+      ? await analyzeStaticFixedSwitch16k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.fixedSwitch16k || null, cdlPrg, cdlChr, cdlMeta })
       : isFixedSwitch32k
-        ? await analyzeStaticFixedSwitch32k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.fixedSwitch32k || null })
+        ? await analyzeStaticFixedSwitch32k({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.fixedSwitch32k || null, cdlPrg, cdlChr, cdlMeta })
         : isMmc1
-          ? await analyzeStaticMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.mmc1 || tuningOverrides?.fixedSwitch16k || null })
+          ? await analyzeStaticMmc1({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.mmc1 || tuningOverrides?.fixedSwitch16k || null, cdlPrg, cdlChr, cdlMeta })
+        : isMmc3
+          ? await analyzeStaticMmc3({ prgBytes, vectors, mapperKind, mapperMeta, probableConfigOverrides: tuningOverrides?.mmc3 || tuningOverrides?.fixedSwitch16k || null, cdlPrg, cdlChr, cdlMeta })
           : await analyzeStaticNrom({
             prgBytes,
             vectors,
@@ -39,8 +42,8 @@ async function run() {
             vsaProgressEveryMs: 100
           });
 
-    const { analysis, blockAliases } = buildDisplayAnalysis(raw);
-    parentPort?.postMessage({ ok: true, raw, analysis, blockAliases });
+    const { analysis: displayAnalysis, rawToDisplayBlockIds } = buildDisplayAnalysis(rawAnalysis);
+    parentPort?.postMessage({ ok: true, rawAnalysis, displayAnalysis, rawToDisplayBlockIds });
   } catch (err) {
     const msg = err?.message || String(err);
     const stack = err?.stack || null;

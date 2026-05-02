@@ -1,7 +1,9 @@
+import { parseBytesText } from '../../utils/byteTextUtils.js';
+import { u16le } from '../../utils/binaryReadUtils.js';
+
 // Wait-loop recognizers.
 //
-// POIs link to the containing coalesced display block. We use `anchorRomOff`
-// to zoom to the precise line within that block.
+// POIs expose ROM spans; the renderer resolves the current display target lazily.
 
 // Wait-loop recognizers.
 //
@@ -10,22 +12,6 @@
 //   (interrupt/NMI, DMA, etc.) changes the tested state.
 
 const BRANCH_MNEMONICS = new Set(['BPL', 'BMI', 'BVC', 'BVS', 'BCC', 'BCS', 'BNE', 'BEQ']);
-
-function parseBytesText(bytesText) {
-  if (!bytesText || typeof bytesText !== 'string') return [];
-  const parts = bytesText.split(/\s+/).filter(Boolean);
-  const out = [];
-  for (const p of parts) {
-    const v = Number.parseInt(p, 16);
-    if (!Number.isFinite(v)) return [];
-    out.push(v & 0xff);
-  }
-  return out;
-}
-
-function u16le(bytes, off) {
-  return ((bytes[off] | (bytes[off + 1] << 8)) & 0xffff) >>> 0;
-}
 
 function makePoiId(kind, romOffStart, romOffEnd) {
   return `${kind}:${(romOffStart >>> 0).toString(16)}-${(romOffEnd >>> 0).toString(16)}`;
@@ -41,12 +27,6 @@ function basisSpanFromLines(lines, iStart, iEndInclusive) {
   return { start: start >>> 0, end: end >>> 0 };
 }
 
-function anchorFromLine(ln) {
-  return {
-    romOff: typeof ln?.romOff === 'number' ? (ln.romOff >>> 0) : null,
-    cpuAddr: typeof ln?.cpuAddr === 'number' ? (ln.cpuAddr & 0xffff) : null
-  };
-}
 
 function operandZp(line) {
   if (!line || line.mode !== 'zp') return null;
@@ -197,17 +177,13 @@ export function runWaitLoopRecognizersForBlock(block) {
       const m = recognizeZpCmpImmWait(lines, i);
       if (m) {
         const basis = basisSpanFromLines(lines, i, i + 2);
-        const anchor = anchorFromLine(lines[i]);
-        if (basis && anchor.romOff != null) {
+        if (basis) {
           const id = makePoiId(m.kind, basis.start, basis.end);
           pois.push({
             id,
             kind: m.kind,
             label: m.pill,
             pill: m.pill,
-            anchorRomOff: basis.start,
-            anchorCpuAddr: anchor.cpuAddr,
-            anchorBlockId: block.id,
             basis: { romOffSpan: basis },
             meta: m.meta
           });
@@ -220,17 +196,13 @@ export function runWaitLoopRecognizersForBlock(block) {
       const ppu = recognizePpuStatusPolling(lines, i);
       if (ppu) {
         const basis = basisSpanFromLines(lines, i, i + 1);
-        const anchor = anchorFromLine(lines[i]);
-        if (basis && anchor.romOff != null) {
+        if (basis) {
           const id = makePoiId(ppu.kind, basis.start, basis.end);
           pois.push({
             id,
             kind: ppu.kind,
             label: ppu.pill,
             pill: ppu.pill,
-            anchorRomOff: basis.start,
-            anchorCpuAddr: anchor.cpuAddr,
-            anchorBlockId: block.id,
             basis: { romOffSpan: basis },
             meta: ppu.meta
           });
@@ -240,17 +212,13 @@ export function runWaitLoopRecognizersForBlock(block) {
       const zp = recognizeTwoInstrZpWait(lines, i);
       if (zp) {
         const basis = basisSpanFromLines(lines, i, i + 1);
-        const anchor = anchorFromLine(lines[i]);
-        if (basis && anchor.romOff != null) {
+        if (basis) {
           const id = makePoiId(zp.kind, basis.start, basis.end);
           pois.push({
             id,
             kind: zp.kind,
             label: zp.pill,
             pill: zp.pill,
-            anchorRomOff: basis.start,
-            anchorCpuAddr: anchor.cpuAddr,
-            anchorBlockId: block.id,
             basis: { romOffSpan: basis },
             meta: zp.meta
           });

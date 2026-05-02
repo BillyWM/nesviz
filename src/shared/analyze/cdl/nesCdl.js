@@ -1,67 +1,151 @@
-// NES CDL support (Mesen/Mesen2 compatible with the long-standing FCEUX-style CDL bitfield). 🤖
-// The CDL is a byte-for-byte overlay for PRG+CHR where each byte is a bitfield describing observed usage. 🤖
+import { readUint32Le } from '../../utils/binaryReadUtils.js';
 
-// Bits we care about now (PRG):
-//  - bit0: executed as code
-//  - bit1: read as data
-// Mesen-family adds additional bits (jump targets, JSR targets, DMC reads, etc); we preserve everything. 🤖
+const NES_CDL_FORMAT_MESEN2 = 'mesen2';
+const MESEN2_HEADER_SIZE = 9;
+const MESEN2_HEADER_MAGIC = 'CDLv2';
 
-export function sliceCdlForRom(cdlBytes, { prgSize, chrSize }) {
-  const warnings = [];
-  const expected = (prgSize | 0) + (chrSize | 0);
-  const rawLen = cdlBytes?.length | 0;
+const textDecoder = new TextDecoder('ascii');
 
-  if (!cdlBytes || rawLen <= 0) {
-    return { prg: null, chr: null, warnings: ['Empty CDL file'] };
+export { NES_CDL_FORMAT_MESEN2 };
+
+export function parseNesCdl(cdlBytes, { prgSize, chrSize }, options = {}) {
+  const formatHint = typeof options?.formatHint === 'string' ? options.formatHint.trim().toLowerCase() : 'auto';
+
+  if (!cdlBytes || (cdlBytes.length | 0) <= 0) {
+    return {
+      ok: false,
+      format: null,
+      prg: null,
+      chr: null,
+      warnings: ['Empty CDL file']
+    };
   }
 
-  // Most tools write exactly PRG+CHR bytes (excluding the iNES header). If the file is longer, we conservatively take
-  // the leading expected bytes and keep a warning so the user can sanity-check. 🤖
-  let usable = cdlBytes;
-  if (expected > 0 && rawLen !== expected) {
-    if (rawLen < expected) {
-      warnings.push(`CDL is shorter than expected (got ${rawLen}, expected ${expected}); missing bytes will be treated as unknown.`);
+  if (formatHint !== 'auto' && formatHint !== NES_CDL_FORMAT_MESEN2) {
+    return unsupportedFormatResult(`Unsupported CDL format hint "${options.formatHint}". Only Mesen2 CDLv2 files are supported right now.`);
+  }
+
+  if (formatHint === NES_CDL_FORMAT_MESEN2 || hasMesen2Header(cdlBytes)) {
+    return parseMesen2NesCdl(cdlBytes, { prgSize, chrSize });
+  }
+
+  return unsupportedFormatResult('Unsupported CDL format. Only Mesen2 CDLv2 files are supported right now.');
+}
+
+export function parseMesen2NesCdl(cdlBytes, { prgSize, chrSize }) {
+  if (!cdlBytes || (cdlBytes.length | 0) <= 0) {
+    return {
+      ok: false,
+      format: NES_CDL_FORMAT_MESEN2,
+      prg: null,
+      chr: null,
+      warnings: ['Empty CDL file']
+    };
+  }
+
+  const warnings = [];
+  const rawLen = cdlBytes.length | 0;
+
+  if (!hasMesen2Header(cdlBytes)) {
+    return unsupportedFormatResult('Unsupported CDL format. Expected a Mesen2 CDLv2 header.');
+  }
+
+  if (rawLen < MESEN2_HEADER_SIZE) {
+    return {
+      ok: false,
+      format: NES_CDL_FORMAT_MESEN2,
+      prg: null,
+      chr: null,
+      warnings: [`CDL is truncated (got ${rawLen} bytes, expected at least ${MESEN2_HEADER_SIZE} for the header).`]
+    };
+  }
+
+  const expectedPayload = (prgSize | 0) + (chrSize | 0);
+  const payload = cdlBytes.subarray(MESEN2_HEADER_SIZE);
+  const payloadLen = payload.length | 0;
+
+  if (expectedPayload > 0 && payloadLen !== expectedPayload) {
+    if (payloadLen < expectedPayload) {
+      warnings.push(`CDL payload is shorter than expected after the Mesen2 header (got ${payloadLen}, expected ${expectedPayload}); missing bytes will be treated as unknown.`);
     } else {
-      warnings.push(`CDL is longer than expected (got ${rawLen}, expected ${expected}); extra bytes ignored.`);
-      usable = cdlBytes.subarray(0, expected);
+      warnings.push(`CDL payload is longer than expected after the Mesen2 header (got ${payloadLen}, expected ${expectedPayload}); extra bytes ignored.`);
     }
   }
 
-  const prg = usable.subarray(0, Math.min(prgSize, usable.length));
+  const prg = payload.subarray(0, Math.min(prgSize, payload.length));
   const chrStart = prgSize;
-  const chrEnd = Math.min(chrStart + chrSize, usable.length);
-  const chr = chrSize > 0 && chrEnd > chrStart ? usable.subarray(chrStart, chrEnd) : null;
+  const chrEnd = Math.min(chrStart + chrSize, payload.length);
+  const chr = chrSize > 0 && chrEnd > chrStart ? payload.subarray(chrStart, chrEnd) : null;
 
-  return { prg, chr, warnings };
+  return {
+    ok: true,
+    format: NES_CDL_FORMAT_MESEN2,
+    prg,
+    chr,
+    warnings,
+    header: {
+      magic: MESEN2_HEADER_MAGIC,
+      crc32: readUint32Le(cdlBytes, 5)
+    }
+  };
 }
 
-export function decodePrgCdlByte(b) {
+function unsupportedFormatResult(message) {
+  return {
+    ok: false,
+    format: null,
+    prg: null,
+    chr: null,
+    warnings: [message]
+  };
+}
+
+function hasMesen2Header(cdlBytes) {
+  if (!cdlBytes || (cdlBytes.length | 0) < MESEN2_HEADER_SIZE) return false;
+  return textDecoder.decode(cdlBytes.subarray(0, MESEN2_HEADER_MAGIC.length)) === MESEN2_HEADER_MAGIC;
+}
+
+const prgCdlDecoders = {
+  [NES_CDL_FORMAT_MESEN2]: {
+    decodeByte: decodeMesen2PrgCdlByte,
+    isDataObserved: isMesen2PrgDataObserved,
+    cpuAddrForRomOff: cpuAddrForRomOffUsingMesen2Cdl
+  }
+};
+
+export function decodePrgCdlByte(b, format = NES_CDL_FORMAT_MESEN2) {
+  return getPrgCdlDecoder(format).decodeByte(b);
+}
+
+export function isPrgDataObserved(flags, format = NES_CDL_FORMAT_MESEN2) {
+  return getPrgCdlDecoder(format).isDataObserved(flags);
+}
+
+export function cpuAddrForRomOffUsingSlot(romOff, slot, format = NES_CDL_FORMAT_MESEN2) {
+  return getPrgCdlDecoder(format).cpuAddrForRomOff(romOff, slot);
+}
+
+function getPrgCdlDecoder(format) {
+  return prgCdlDecoders[format] || prgCdlDecoders[NES_CDL_FORMAT_MESEN2];
+}
+
+function decodeMesen2PrgCdlByte(b) {
   const v = b & 0xff;
   return {
     raw: v,
     exec: (v & 0x01) !== 0,
     data: (v & 0x02) !== 0,
-    // slot is A14-A13 of the most recent access; in practice this corresponds to which 8KiB window ($8000,$A000,$C000,$E000). 🤖
-    slot: (v >> 2) & 0x03,
-    // Mesen-family extras (kept for later UI):
-    jumpTarget: (v & 0x10) !== 0,
-    indirectData: (v & 0x20) !== 0,
-    dmcRead: (v & 0x40) !== 0,
-    jsrTarget: (v & 0x80) !== 0
+    jumpTarget: (v & 0x04) !== 0,
+    subEntryPoint: (v & 0x08) !== 0,
+    pcmData: (v & 0x80) !== 0
   };
 }
 
-export function isPrgDataObserved(flags) {
+function isMesen2PrgDataObserved(flags) {
   if (!flags) return false;
-  // "Data" in the View-A sense means this byte was observed being read as data in any way. 🤖
-  return !!(flags.data || flags.indirectData || flags.dmcRead);
+  return !!(flags.data || flags.pcmData);
 }
 
-export function cpuAddrForRomOffUsingSlot(romOff, slot) {
-  // Given the 8KiB slot ($8000 + slot*0x2000) and the low 13 bits of the ROM offset, we can reconstruct
-  // a plausible CPU address for that ROM byte. This is especially useful for 16KiB NROM where $8000-$BFFF
-  // mirrors into $C000-$FFFF. 🤖
-  const offIn8k = romOff & 0x1fff;
-  const base = 0x8000 + ((slot & 3) * 0x2000);
-  return (base + offIn8k) & 0xffff;
+function cpuAddrForRomOffUsingMesen2Cdl(romOff) {
+  return (0x8000 + ((romOff | 0) & 0x7fff)) & 0xffff;
 }

@@ -1,16 +1,8 @@
 import { disasmOneAtCtx } from '../../cpu6502/disasm.js';
 import { buildRepeatStats } from './semanticRepeats.js';
+import { s8, u16le } from '../../utils/binaryReadUtils.js';
 
 const BRANCHES = new Set(['BPL', 'BMI', 'BVC', 'BVS', 'BCC', 'BCS', 'BNE', 'BEQ']);
-
-function s8(n) {
-  const b = n & 0xff;
-  return b < 0x80 ? b : b - 0x100;
-}
-
-function u16le(bytes, off) {
-  return (bytes[off] | (bytes[off + 1] << 8)) & 0xffff;
-}
 
 function isTerminator(mnemonic, mode) {
   if (mnemonic === 'RTS' || mnemonic === 'RTI' || mnemonic === 'BRK') return true;

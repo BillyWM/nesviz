@@ -1,14 +1,7 @@
 import { hex4 } from '../../cpu6502/fmt.js';
 import { vEnumerate } from '../vsa/value.js';
 import { extractJumpTableSignals } from './jumpTableSignals.js';
-import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
-
-function readPrgAtCpu(prgBytes, mapper, cpuAddr, fetchCtx = null) {
-  const romOff = cpuToRomOffWithMapper(mapper, cpuAddr, fetchCtx);
-  if (romOff == null) return null;
-  if (romOff < 0 || romOff >= prgBytes.length) return null;
-  return prgBytes[romOff] & 0xff;
-}
+import { readPrgAtCpu } from '../../utils/romReadUtils.js';
 
 function seedKey(mapper, seed) {
   const ctxKey = mapper?.fetchCtxKey ? mapper.fetchCtxKey(seed.fetchCtx) : 'default';
@@ -177,12 +170,14 @@ export function inferSpeculativeDispatchTargets({
     if (seedMap.size === seedKeysBefore) continue;
 
     const targetCpuAddrs = Array.from(new Set(candidates.flatMap((c) => c.targetCpuAddrs || []))).sort((a, b) => a - b);
+    if (!Number.isFinite(site?.romOff)) continue;
+    const siteRomOff = site.romOff >>> 0;
     artifacts.push({
-      id: `specdisp:${site.siteKey || hex4(pc)}:${site.kind}`,
+      id: `specdisp:${siteRomOff}:${site.kind}`,
       kind: 'speculativeDispatch',
       confidence: 'probable',
       sitePc: pc,
-      siteBlockId: site.blockId,
+      siteRomOff,
       siteKind: site.kind,
       bases: candidates.map((c) => c.basis),
       ptrAddr: typeof site.ptrAddr === 'number' ? (site.ptrAddr & 0xffff) : null,

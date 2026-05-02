@@ -81,3 +81,32 @@ export function bShr1(a) {
   const knownValue = (av >> 1) & 0x7f;
   return { knownMask: clamp8(knownMask), knownValue: clamp8(knownValue) };
 }
+
+export function bEnumerate8(bits, cap = 32) {
+  if (!bits) return null;
+  const knownMask = clamp8(bits.knownMask ?? 0);
+  const knownValue = clamp8(bits.knownValue ?? 0) & knownMask;
+  const unknownMask = (~knownMask) & 0xff;
+  let unknownCount = 0;
+  for (let bit = 0; bit < 8; bit++) {
+    if (unknownMask & (1 << bit)) unknownCount++;
+  }
+  const total = 1 << unknownCount;
+  if (total > Math.max(1, cap | 0)) return null;
+
+  const unknownBits = [];
+  for (let bit = 0; bit < 8; bit++) {
+    if (unknownMask & (1 << bit)) unknownBits.push(bit);
+  }
+
+  const out = [];
+  for (let combo = 0; combo < total; combo++) {
+    let value = knownValue;
+    for (let i = 0; i < unknownBits.length; i++) {
+      if (combo & (1 << i)) value |= (1 << unknownBits[i]);
+    }
+    out.push(clamp8(value));
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}

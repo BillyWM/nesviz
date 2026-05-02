@@ -1,22 +1,5 @@
 import { UNKNOWN_FETCH_CTX_KEY, siteKeyFor } from '../fetchContext.js';
-
-function addToSetMap(map, key, values) {
-  if (key == null) return;
-  let set = map.get(key);
-  if (!set) {
-    set = new Set();
-    map.set(key, set);
-  }
-  if (values instanceof Set) {
-    for (const value of values) set.add(value);
-    return;
-  }
-  if (Array.isArray(values)) {
-    for (const value of values) set.add(value);
-    return;
-  }
-  set.add(values);
-}
+import { addToSetMap } from '../../utils/collectionMapUtils.js';
 
 function valuesFromBlockStarts(block) {
   const out = new Set();
@@ -136,26 +119,26 @@ export function buildBlockContextIndex({
     }
   }
 
-  const blockFamiliesById = propagateSets({ roots: familyRoots, succs: allSuccs, blockIds });
+  const rawBlockFamiliesById = propagateSets({ roots: familyRoots, succs: allSuccs, blockIds });
   for (const block of blocks || []) {
-    if (blockFamiliesById.has(block.id)) continue;
-    blockFamiliesById.set(block.id, new Set(['mainOrUnknown']));
+    if (rawBlockFamiliesById.has(block.id)) continue;
+    rawBlockFamiliesById.set(block.id, new Set(['mainOrUnknown']));
   }
 
   const functionRoots = new Map();
   for (const [blockId] of familyRoots.entries()) addToSetMap(functionRoots, blockId, `function:${blockId}`);
   for (const blockId of callTargetIds) addToSetMap(functionRoots, blockId, `function:${blockId}`);
 
-  let blockFunctionIdsById = propagateSets({ roots: functionRoots, succs: functionSuccs, blockIds });
+  let rawBlockFunctionIdsById = propagateSets({ roots: functionRoots, succs: functionSuccs, blockIds });
   for (const block of blocks || []) {
-    if (blockFunctionIdsById.has(block.id)) continue;
-    blockFunctionIdsById.set(block.id, new Set([`function:${block.id}`]));
+    if (rawBlockFunctionIdsById.has(block.id)) continue;
+    rawBlockFunctionIdsById.set(block.id, new Set([`function:${block.id}`]));
   }
 
   return {
-    blockFamiliesById,
-    blockFunctionIdsById,
-    blockFamiliesByIdObject: toSortedObjectArray(blockFamiliesById),
-    blockFunctionIdsByIdObject: toSortedObjectArray(blockFunctionIdsById)
+    rawBlockFamiliesById,
+    rawBlockFunctionIdsById,
+    rawBlockFamiliesByIdObject: toSortedObjectArray(rawBlockFamiliesById),
+    rawBlockFunctionIdsByIdObject: toSortedObjectArray(rawBlockFunctionIdsById)
   };
 }

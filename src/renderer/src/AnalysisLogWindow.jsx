@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import RefreshButton from './components/RefreshButton.jsx';
 
 export default function AnalysisLogWindow() {
   const [lines, setLines] = useState([]);
@@ -36,14 +37,12 @@ export default function AnalysisLogWindow() {
 
   return (
     <div className="nv-toolwindow">
-      <div className="nv-modal-header">
+      <div className="nv-modal-header nv-centered-tool-header">
         <div className="nv-modal-title">Analysis Log</div>
-        <button type="button" className="nv-btn" onClick={reload} title="Reload analysis log">
-          Refresh
-        </button>
-        <button type="button" className="nv-btn" onClick={() => window.close()}>
-          Close
-        </button>
+        <div className="nv-centered-tool-header-actions" aria-label="Analysis Log actions">
+          <RefreshButton onClick={reload} title="Reload analysis log" />
+        </div>
+        <div className="nv-centered-tool-header-spacer" aria-hidden="true" />
       </div>
 
       <div className="nv-modal-meta">

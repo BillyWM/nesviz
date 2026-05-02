@@ -1,21 +1,12 @@
+import { fmtHex } from '../../shared/utils/hexUtils.js';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { UNKNOWN_FETCH_CTX_KEY } from '../../shared/analyze/fetchContext.js';
-
-function fmtHex4(v) {
-  if (typeof v !== 'number') return '????';
-  return (v & 0xffff).toString(16).toUpperCase().padStart(4, '0');
-}
-
-function fmtHex6(v) {
-  if (typeof v !== 'number') return '??????';
-  return (v >>> 0).toString(16).toUpperCase().padStart(6, '0');
-}
+import RefreshButton from './components/RefreshButton.jsx';
 
 export default function LabelsWindow() {
   const [status, setStatus] = useState('');
   const [hasRom, setHasRom] = useState(false);
   const [romHash, setRomHash] = useState(null);
-  const [labelsBySite, setLabelsBySite] = useState({});
+  const [labelsByRomOff, setLabelsByRomOff] = useState({});
   const [labelsByAddr, setLabelsByAddr] = useState({});
 
   const reload = useCallback(async () => {
@@ -29,7 +20,7 @@ export default function LabelsWindow() {
       const nextHasRom = !!res.hasRom;
       setHasRom(nextHasRom);
       setRomHash(nextHasRom ? (res.romHash || null) : null);
-      setLabelsBySite((res.labels && typeof res.labels === 'object') ? res.labels : {});
+      setLabelsByRomOff((res.labels && typeof res.labels === 'object') ? res.labels : {});
       setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
       setStatus('');
     } catch (e) {
@@ -53,56 +44,35 @@ export default function LabelsWindow() {
     return out;
   }, [labelsByAddr]);
 
-  const siteItems = useMemo(() => {
+  const romItems = useMemo(() => {
     const out = [];
-    for (const [siteKey, entry] of Object.entries(labelsBySite || {})) {
+    for (const [key, entry] of Object.entries(labelsByRomOff || {})) {
       const label = (entry?.label ?? '').toString();
-      if (!siteKey || !label) continue;
-      const cpuAddr = typeof entry?.cpuAddr === 'number' ? (entry.cpuAddr & 0xffff) : null;
-      const romOff = typeof entry?.romOff === 'number' ? (entry.romOff | 0) : null;
-      const ctxKey = typeof entry?.ctxKey === 'string' && entry.ctxKey ? entry.ctxKey : UNKNOWN_FETCH_CTX_KEY;
-      out.push({ kind: 'site', siteKey, ctxKey, cpuAddr, romOff, label });
+      const romOff = typeof entry?.romOff === 'number' ? (entry.romOff >>> 0) : Number(key);
+      if (!Number.isFinite(romOff) || romOff < 0 || !label) continue;
+      out.push({ kind: 'rom', romOff: romOff >>> 0, label });
     }
-    out.sort((a, b) => {
-      const ar = a.romOff ?? Number.MAX_SAFE_INTEGER;
-      const br = b.romOff ?? Number.MAX_SAFE_INTEGER;
-      if (ar !== br) return ar - br;
-      const ac = a.cpuAddr ?? 0;
-      const bc = b.cpuAddr ?? 0;
-      return ac - bc;
-    });
+    out.sort((a, b) => a.romOff - b.romOff);
     return out;
-  }, [labelsBySite]);
+  }, [labelsByRomOff]);
 
-  const total = addrItems.length + siteItems.length;
+  const total = addrItems.length + romItems.length;
 
   function navigateTo(it) {
     if (!it || !window?.nesviz?.labelsNavigate) return;
-    if (it.kind === 'addr') {
-      window.nesviz.labelsNavigate({ kind: 'addr', cpuAddr: it.cpuAddr });
-      return;
-    }
-    if (it.kind === 'site') {
-      window.nesviz.labelsNavigate({
-        kind: 'site',
-        siteKey: it.siteKey,
-        ctxKey: it.ctxKey,
-        cpuAddr: it.cpuAddr,
-        romOff: it.romOff
-      });
+    if (it.kind === 'rom') {
+      window.nesviz.labelsNavigate({ kind: 'rom', romOff: it.romOff });
     }
   }
 
   return (
     <div className="nv-toolwindow">
-      <div className="nv-modal-header">
+      <div className="nv-modal-header nv-centered-tool-header">
         <div className="nv-modal-title">Labels</div>
-        <button type="button" className="nv-btn" onClick={reload} title="Reload labels">
-          Refresh
-        </button>
-        <button type="button" className="nv-btn" onClick={() => window.close()}>
-          Close
-        </button>
+        <div className="nv-centered-tool-header-actions" aria-label="Labels actions">
+          <RefreshButton onClick={reload} title="Reload labels" />
+        </div>
+        <div className="nv-centered-tool-header-spacer" aria-hidden="true" />
       </div>
 
       <div className="nv-modal-meta">
@@ -130,37 +100,33 @@ export default function LabelsWindow() {
                   <div className="nv-col nv-col-name nv-modal-colhead" style={{ textAlign: 'left' }}>CPU address labels</div>
                 </div>
                 {addrItems.map((it) => (
-                  <button
+                  <div
                     key={`a:${it.cpuAddr}`}
-                    type="button"
                     className="nv-modal-row"
-                    onClick={() => navigateTo(it)}
-                    title={`$${fmtHex4(it.cpuAddr)}`}
+                    title={`$${fmtHex(it.cpuAddr)}`}
                   >
                     <div className="nv-col nv-col-name" style={{ textAlign: 'left' }}>{it.label}</div>
-                    <div className="nv-col nv-col-meta" style={{ textAlign: 'right' }}>${fmtHex4(it.cpuAddr)}</div>
-                  </button>
+                    <div className="nv-col nv-col-meta" style={{ textAlign: 'right' }}>${fmtHex(it.cpuAddr)}</div>
+                  </div>
                 ))}
               </>
             ) : null}
 
-            {siteItems.length ? (
+            {romItems.length ? (
               <>
                 <div className="nv-modal-list-head" style={{ paddingTop: addrItems.length ? 14 : 6 }}>
-                  <div className="nv-col nv-col-name nv-modal-colhead" style={{ textAlign: 'left' }}>Code site labels</div>
+                  <div className="nv-col nv-col-name nv-modal-colhead" style={{ textAlign: 'left' }}>ROM labels</div>
                 </div>
-                {siteItems.map((it) => (
+                {romItems.map((it) => (
                   <button
-                    key={`s:${it.siteKey}`}
+                    key={`rom:${it.romOff}`}
                     type="button"
                     className="nv-modal-row"
                     onClick={() => navigateTo(it)}
-                    title={it.romOff != null ? `ROM+0x${fmtHex6(it.romOff)}` : it.siteKey}
+                    title={`ROM+0x${fmtHex(it.romOff, 6)}`}
                   >
                     <div className="nv-col nv-col-name" style={{ textAlign: 'left' }}>{it.label}</div>
-                    <div className="nv-col nv-col-meta" style={{ textAlign: 'right' }}>
-                      {it.cpuAddr != null ? `$${fmtHex4(it.cpuAddr)}` : '—'}{it.romOff != null ? ` · 0x${fmtHex6(it.romOff)}` : ''}
-                    </div>
+                    <div className="nv-col nv-col-meta" style={{ textAlign: 'right' }}>0x{fmtHex(it.romOff, 6)}</div>
                   </button>
                 ))}
               </>

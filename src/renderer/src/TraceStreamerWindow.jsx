@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { formatKiB } from '../../shared/utils/byteFormatUtils.js';
+import { parseLeadingInt } from '../../shared/utils/numberParseUtils.js';
 
 const MAPPER_NAMES = Object.freeze({
   0: 'NROM',
@@ -13,17 +15,6 @@ const MAPPER_NAMES = Object.freeze({
   11: 'Color Dreams',
   66: 'GxROM'
 });
-
-function parseLeadingInt(value) {
-  const m = String(value || '').match(/^(-?\d+)/);
-  return m ? Number(m[1]) : null;
-}
-
-function formatKiB(bytes) {
-  if (bytes == null || !Number.isFinite(bytes)) return '';
-  const kib = bytes / 1024;
-  return Number.isInteger(kib) ? `${kib} KiB` : `${kib.toFixed(2)} KiB`;
-}
 
 function mapperToText(mapperId) {
   const id = Number(mapperId);
@@ -186,7 +177,7 @@ export default function TraceStreamerWindow() {
     <div className="nv-toolwindow">
       <div className="nv-modal-header">
         <div className="nv-modal-title">Trace Streamer</div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="nv-modal-header-actions">
           <button
             type="button"
             className="nv-btn"
@@ -201,9 +192,6 @@ export default function TraceStreamerWindow() {
             title={connected ? 'Disconnect from emulator' : 'Connect to emulator'}
           >
             {connected ? 'Disconnect' : 'Connect'}
-          </button>
-          <button type="button" className="nv-btn" onClick={() => window.close()}>
-            Close
           </button>
         </div>
       </div>

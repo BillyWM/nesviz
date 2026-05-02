@@ -32,6 +32,13 @@ export const DEFAULT_PROBABLE_CONFIG_NROM = {
   // This is only used during *probe* start selection; full promotion still uses minChunkBytes. 🤖
   minProbeDecodedBytes: 32,
 
+  // Monotone-table data-first discovery / goal-driven code search. 🤖
+  monotoneTableMinEntries: 4,
+  goalDrivenMonotoneSearch: true,
+  goalDrivenMaxPromotedChunks: 24,
+  goalDrivenMaxRawHitsPerTable: 24,
+  goalDrivenBacktrackBytes: 8,
+
   // Promotion thresholds. 🤖
   minChunkBytes: 128,
   minShortChunkBytes: 16,

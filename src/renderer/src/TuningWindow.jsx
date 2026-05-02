@@ -78,8 +78,9 @@ export default function TuningWindow() {
     <div className="nv-toolwindow">
       <div className="nv-modal-header">
         <div className="nv-modal-title">Tuning</div>
-        <button type="button" className="nv-btn" onClick={reset}>Reset</button>
-        <button type="button" className="nv-btn" onClick={() => window.close()}>Close</button>
+        <div className="nv-modal-header-actions">
+          <button type="button" className="nv-btn" onClick={reset}>Reset</button>
+        </div>
       </div>
 
       <div className="nv-modal-meta">

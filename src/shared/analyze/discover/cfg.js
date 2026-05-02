@@ -484,6 +484,11 @@ export function discoverCfg({
       ctxKey,
       fetchCtx: rec.fetchCtx,
       blockInstanceId: instId,
+      leaderKind: rec.leaderKind,
+      leaderReasons: rec.leaderReasons || [],
+      isCertainHardLeader: !!rec.isCertainHardLeader,
+      startSiteKey: rec.siteKey,
+      rawBlockIds: [blockId],
       instances: [{ ctxId: ctxKey, fetchCtxKey: ctxKey, siteKey: rec.siteKey, fetchCtx: rec.fetchCtx, blockInstanceId: instId, cpuStart: startPc }],
       lines,
       probableSemantic: probableFilter.semantic
@@ -521,19 +526,19 @@ export function discoverCfg({
     if (f.type === 'branch') {
       const takenTargets = mapper.targetSitesForCpuAddr ? mapper.targetSitesForCpuAddr(currentCtx, f.target, { maxForks: 4 }) : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: currentCtx }], ambiguous: false };
       if (takenTargets.sites?.length) addResolvedEdges(block, takenTargets.sites, 'branch_taken', { branch: f.mnemonic });
-      else if (takenTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff, fetchCtx: currentCtx });
+      else if (takenTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', rawBlockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff, fetchCtx: currentCtx });
       addResolvedEdges(block, [{ cpuAddr: f.fallthrough & 0xffff, fetchCtx: currentCtx }], 'branch_fallthrough', { branch: f.mnemonic });
     } else if (f.type === 'call') {
       const callTargets = mapper.targetSitesForCpuAddr ? mapper.targetSitesForCpuAddr(currentCtx, f.target, { maxForks: 4 }) : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: currentCtx }], ambiguous: false };
       if (callTargets.sites?.length) addResolvedEdges(block, callTargets.sites, 'call');
-      else if (callTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff, fetchCtx: currentCtx });
+      else if (callTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', rawBlockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff, fetchCtx: currentCtx });
       addResolvedEdges(block, [{ cpuAddr: f.fallthrough & 0xffff, fetchCtx: currentCtx }], 'fallthrough');
     } else if (f.type === 'jump') {
       const jumpTargets = mapper.targetSitesForCpuAddr ? mapper.targetSitesForCpuAddr(currentCtx, f.target, { maxForks: 4 }) : { sites: [{ cpuAddr: f.target & 0xffff, fetchCtx: currentCtx }], ambiguous: false };
       if (jumpTargets.sites?.length) addResolvedEdges(block, jumpTargets.sites, 'jump');
-      else if (jumpTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff, fetchCtx: currentCtx });
+      else if (jumpTargets.ambiguous) unresolved.push({ kind: 'ambiguous_banked_target', rawBlockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, targetCpuAddr: f.target & 0xffff, fetchCtx: currentCtx });
     } else if (f.type === 'jmp_ind') {
-      unresolved.push({ kind: 'jmp_ind', blockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, ptrAddr: f.ptrAddr, fetchCtx: currentCtx });
+      unresolved.push({ kind: 'jmp_ind', rawBlockId: block.id, ctxKey: block.ctxKey, siteKey: last.siteKey || null, pc: last.cpuAddr, romOff: last.romOff, ptrAddr: f.ptrAddr, fetchCtx: currentCtx });
     } else {
       const nextPc = (last.cpuAddr + last.len) & 0xffff;
       const nextSiteKey = siteKeyFor(block.ctxKey, nextPc);

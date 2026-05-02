@@ -48,6 +48,6 @@ export async function runVsa({
 
   return {
     siteStatesBySiteKey,
-    inStatesByBlockId: engine.inStatesByBlockId
+    inStatesByRawBlockId: engine.inStatesByRawBlockId
   };
 }

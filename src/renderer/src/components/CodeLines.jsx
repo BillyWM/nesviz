@@ -1,26 +1,6 @@
-import { hex4, hex6 } from '../util/hex.js';
-import { UNKNOWN_FETCH_CTX_KEY } from '../../../shared/analyze/fetchContext.js';
-
-function hex2(n) {
-  return (n & 0xff).toString(16).toUpperCase().padStart(2, '0');
-}
-
-function parseBytesText(bytesText) {
-  if (typeof bytesText !== 'string') return [];
-  const parts = bytesText.trim().split(/\s+/).filter(Boolean);
-  const out = [];
-  for (const p of parts) {
-    const v = parseInt(p, 16);
-    if (Number.isFinite(v)) out.push(v & 0xff);
-  }
-  return out;
-}
-
-function u16le(bytes, off) {
-  const lo = bytes[off] ?? 0;
-  const hi = bytes[off + 1] ?? 0;
-  return (lo | (hi << 8)) & 0xffff;
-}
+import { fmtHex } from '../../../shared/utils/hexUtils.js';
+import { parseBytesText } from '../../../shared/utils/byteTextUtils.js';
+import { u16le } from '../../../shared/utils/binaryReadUtils.js';
 
 function getAddrLabel(labelsByAddr, addr) {
   if (!labelsByAddr || typeof labelsByAddr !== 'object') return '';
@@ -31,19 +11,19 @@ function getAddrLabel(labelsByAddr, addr) {
 function fmtZpOrLabel(labelsByAddr, zpAddr) {
   const a = zpAddr & 0xff;
   const lbl = getAddrLabel(labelsByAddr, a);
-  return lbl || `$${hex2(a)}`;
+  return lbl || `$${fmtHex(a, 2)}`;
 }
 
 function fmtAbsOrLabel(labelsByAddr, absAddr) {
   const a = absAddr & 0xffff;
   const lbl = getAddrLabel(labelsByAddr, a);
-  return lbl || `$${hex4(a)}`;
+  return lbl || `$${fmtHex(a, 4)}`;
 }
 
 function buildOperandDisplay(line, labelsByAddr) {
   const mode = line?.mode;
   const mnemonic = line?.mnemonic;
-  const bytes = parseBytesText(line?.bytesText);
+  const bytes = parseBytesText(line?.bytesText, { strict: false });
 
   // Prefer the discovered CFG target for control-flow instructions.
   const flow = line?.flow;
@@ -74,7 +54,7 @@ function buildOperandDisplay(line, labelsByAddr) {
     case 'imm': {
       const imm = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
       if (imm == null) return { operandText: '', operandAddr: null };
-      return { operandText: `#$${hex2(imm)}`, operandAddr: null };
+      return { operandText: `#$${fmtHex(imm, 2)}`, operandAddr: null };
     }
 
     case 'rel': {
@@ -153,7 +133,7 @@ function buildOperandDisplay(line, labelsByAddr) {
   }
 }
 
-function buildAsmText(line, labelsByAddr) {
+export function buildAsmText(line, labelsByAddr) {
   const mnemonic = typeof line?.mnemonic === 'string' ? line.mnemonic : '';
   if (!mnemonic) return typeof line?.asm === 'string' ? line.asm : '';
 
@@ -172,62 +152,79 @@ function getOperandAddrForMenu(line) {
   return (typeof operandAddr === 'number') ? (operandAddr & 0xffff) : null;
 }
 
+function getSelectedCodeText(lineEl) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.rangeCount < 1 || selection.isCollapsed) return '';
+
+  const root = lineEl?.closest?.('.nv-code-lines');
+  if (!root) return '';
+
+  const range = selection.getRangeAt(0);
+  const rows = Array.from(root.querySelectorAll('.nv-line[data-asm-text]'));
+  const asmLines = [];
+  for (const row of rows) {
+    if (!range.intersectsNode(row)) continue;
+    const asmText = row.getAttribute('data-asm-text') || '';
+    if (asmText) asmLines.push(asmText);
+  }
+  return asmLines.join('\n');
+}
+
 export function CodeLines({
   lines,
   currentBlockId,
-  ctxId = UNKNOWN_FETCH_CTX_KEY,
-  labelsBySite,
+  labelsByRomOff,
   labelsByAddr,
-  onNavigateToCpuAddr,
-  canNavigateCpuAddr,
-  resolveBlockIdForCpuAddr,
+  onNavigateToRomOff,
   onHoverLine,
   onContextMenuLine,
-  markedPoiSpan
+  markedRomSpan
 }) {
   if (!lines || lines.length === 0) return null;
 
-  const poiStart = typeof markedPoiSpan?.start === 'number' ? (markedPoiSpan.start >>> 0) : null;
-  const poiEnd = typeof markedPoiSpan?.end === 'number' ? (markedPoiSpan.end >>> 0) : null;
-  const hasPoi = poiStart !== null && poiEnd !== null && poiEnd > poiStart;
+  const spanStart = typeof markedRomSpan?.start === 'number' ? (markedRomSpan.start >>> 0) : null;
+  const spanEnd = typeof markedRomSpan?.end === 'number' ? (markedRomSpan.end >>> 0) : null;
+  const hasMarkedSpan = spanStart !== null && spanEnd !== null && spanEnd > spanStart;
 
   return (
     <div className="nv-code-lines">
-      {lines.map((line) => {
-        const lineSiteKey = typeof line?.siteKey === 'string' ? line.siteKey : null;
-        const lineLabel = (lineSiteKey && labelsBySite && typeof labelsBySite === 'object')
-          ? (labelsBySite[lineSiteKey]?.label || '')
+      {lines.map((line, index) => {
+        const lineRomOff = typeof line?.romOff === 'number' ? (line.romOff >>> 0) : null;
+        const lineLen = typeof line?.len === 'number' && line.len > 0 ? (line.len >>> 0) : 1;
+        const lineEnd = lineRomOff !== null ? lineRomOff + lineLen : null;
+        const lineLabel = (lineRomOff !== null && labelsByRomOff && typeof labelsByRomOff === 'object')
+          ? (labelsByRomOff[String(lineRomOff)]?.label || '')
           : '';
 
         const asmText = buildAsmText(line, labelsByAddr);
 
         const flowType = line?.flow?.type;
         const isDirect = flowType === 'branch' || flowType === 'jump' || flowType === 'call';
-        const target = isDirect ? line.flow?.target : null;
-        const resolvedTargetBlockId = typeof target === 'number' && typeof resolveBlockIdForCpuAddr === 'function'
-          ? resolveBlockIdForCpuAddr(target, line?.ctxKey || ctxId)
+        const targetRomOff = isDirect && typeof line.flow?.targetRomOff === 'number'
+          ? (line.flow.targetRomOff >>> 0)
           : null;
-
-        // Avoid intra-block navigation (loops, short forward skips, etc.) once we coalesce blocks.
-        // We only link when we can resolve the target to a *different* decoded block.
-        const canNav = typeof target === 'number'
-          ? (resolvedTargetBlockId ? (resolvedTargetBlockId !== currentBlockId) : (typeof canNavigateCpuAddr === 'function' && canNavigateCpuAddr(target, line?.ctxKey || ctxId)))
-          : false;
-
+        const target = isDirect && typeof line.flow?.target === 'number' ? (line.flow.target & 0xffff) : null;
+        const canNav = targetRomOff !== null;
         const targetLabel = (typeof target === 'number') ? getAddrLabel(labelsByAddr, target & 0xffff) : '';
-        const linkTitle = typeof target === 'number'
-          ? (targetLabel ? `Go to ${targetLabel} ($${hex4(target)})` : `Go to $${hex4(target)}`)
+        const linkTitle = targetRomOff !== null
+          ? (targetLabel ? `Go to ${targetLabel} (ROM ${fmtHex(targetRomOff, 6)})` : `Go to ROM ${fmtHex(targetRomOff, 6)}`)
           : '';
 
-        const lineRomOff = typeof line?.romOff === 'number' ? (line.romOff >>> 0) : null;
+        const isMarked = hasMarkedSpan
+          && lineRomOff !== null
+          && lineEnd !== null
+          && lineRomOff < spanEnd
+          && lineEnd > spanStart;
 
         return (
           <div
-            key={line.siteKey || `${line.romOff}:${line.cpuAddr}`}
-            className={`nv-line ${hasPoi && lineRomOff !== null && lineRomOff >= poiStart && lineRomOff < poiEnd ? 'is-poi-marked' : ''}`}
+            key={lineRomOff !== null ? `rom:${lineRomOff}` : `line:${index}`}
+            className={`nv-line ${isMarked ? 'is-poi-marked' : ''}`}
+            data-asm-text={asmText}
+            data-rom-off={lineRomOff !== null ? String(lineRomOff) : undefined}
             onMouseEnter={() => {
               if (typeof onHoverLine === 'function') {
-                onHoverLine({ siteKey: line.siteKey, ctxKey: line.ctxKey || ctxId, romOff: line.romOff, cpuAddr: line.cpuAddr, blockId: currentBlockId });
+                onHoverLine({ romOff: line.romOff, cpuAddr: line.cpuAddr, blockId: currentBlockId });
               }
             }}
             onContextMenu={(e) => {
@@ -237,18 +234,18 @@ export function CodeLines({
               const isAsm = !!e.target?.closest?.('.nv-col-asm');
               const operandAddrForMenu = isAsm ? getOperandAddrForMenu(line) : null;
               onContextMenuLine({
-                siteKey: line.siteKey,
-                ctxKey: line.ctxKey || ctxId,
                 romOff: line.romOff,
                 cpuAddr: line.cpuAddr,
                 blockId: currentBlockId,
                 labelTarget: isAsm ? 'operand' : 'line',
-                operandAddr: operandAddrForMenu
+                operandAddr: operandAddrForMenu,
+                asmText,
+                selectedCodeText: getSelectedCodeText(e.currentTarget)
               }, e.clientX, e.clientY);
             }}
           >
-            <div className="nv-col-romoff">{hex6(line.romOff)}</div>
-            <div className="nv-col-cpu">${hex4(line.cpuAddr)}</div>
+            <div className="nv-col-romoff">{fmtHex(line.romOff, 6)}</div>
+            <div className="nv-col-cpu">${fmtHex(line.cpuAddr, 4)}</div>
             <div className="nv-col-bytes">{line.bytesText}</div>
             <div className="nv-col-label">{lineLabel}</div>
             <div className="nv-col-asm">
@@ -256,7 +253,7 @@ export function CodeLines({
                 <button
                   type="button"
                   className="nv-asm-link"
-                  onClick={() => onNavigateToCpuAddr?.(target, line?.ctxKey || ctxId)}
+                  onClick={() => onNavigateToRomOff?.(targetRomOff)}
                   title={linkTitle}
                 >
                   {asmText}

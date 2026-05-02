@@ -2,13 +2,13 @@ import { constrainBranchEdges } from './constraints.js';
 import { makeState, cloneState, makeTracked, joinInto } from './state.js';
 import { vUnknown, vConst8, vSet8, vEnumerate, vAnd8, vOr8, vXor8, vShl1, vShr1, vAdd8, vFilterEq, vFilterNe, vFilterLt, vFilterGe, vIsEmpty } from './value.js';
 import { bUnknown8, bConst8, bJoin, bAndImm, bOrImm, bXorImm, bShl1, bShr1 } from './bits.js';
+import { enumerateTrackedByteValues } from './trackedValue.js';
 import { pUnknown, pConst8, pConst16, pAdd16, pAdd8, pAnd8, pOr8, pXor8, pShl1, pShr1, pReadRom8, pReadMem8, pPtr16FromZp, pJoin } from './prov.js';
 import { createObservationCollector } from './observations.js';
-import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
-
-function clamp8(n) {
-  return (n & 0xff) >>> 0;
-}
+import { clamp8 } from '../../utils/numberUtils.js';
+import { read8, read16le } from '../../utils/binaryReadUtils.js';
+import { canonicalizeCpuAddr, normalizeCpuAddrSet } from '../../utils/addressNormalizeUtils.js';
+import { normalizeRomOffsets, readRomCandidates } from '../../utils/romReadUtils.js';
 
 function isByteConst(abs) {
   return abs && abs.kind === 'const';
@@ -39,67 +39,6 @@ function getReg(state, r) {
   return state[r] || makeTracked();
 }
 
-function read8(prgBytes, romOff, rel) {
-  const i = (romOff + rel) >>> 0;
-  if (i < 0 || i >= prgBytes.length) return 0;
-  return prgBytes[i] & 0xff;
-}
-
-function read16le(prgBytes, romOff, rel) {
-  const lo = read8(prgBytes, romOff, rel);
-  const hi = read8(prgBytes, romOff, rel + 1);
-  return ((lo | (hi << 8)) & 0xffff) >>> 0;
-}
-
-function normalizeRomOffsets(romOffsets, maxSet = 32) {
-  const unique = Array.from(new Set((romOffsets || [])
-    .map((off) => (typeof off === 'number' ? off : Number(off)))
-    .filter((off) => Number.isFinite(off) && off >= 0)
-    .map((off) => off >>> 0))).sort((a, b) => a - b);
-  if (!unique.length) return null;
-  if (unique.length > Math.max(1, maxSet | 0)) return null;
-  return unique;
-}
-
-function resolvePhysicalRomIdentity(mapper, cpuAddr, fetchCtx = null, maxSet = 32) {
-  const a = cpuAddr & 0xffff;
-  if (!mapper) return { kind: 'unknown', romOffsets: [] };
-  if (typeof mapper.resolveCodeFetch === 'function') {
-    const resolved = mapper.resolveCodeFetch(fetchCtx, a);
-    const backing = resolved?.backing || null;
-    if (backing?.kind === 'exact' && typeof backing.romOff === 'number') {
-      return { kind: 'exact', romOffsets: [backing.romOff >>> 0] };
-    }
-    const setVals = normalizeRomOffsets(backing?.romOffs || backing?.romOffsets, maxSet);
-    if (setVals) {
-      return { kind: setVals.length === 1 ? 'exact' : 'set', romOffsets: setVals };
-    }
-    if (backing?.kind === 'unknown') return { kind: 'unknown', romOffsets: [] };
-  }
-  const romOff = cpuToRomOffWithMapper(mapper, a, fetchCtx);
-  if (romOff == null) return { kind: 'unknown', romOffsets: [] };
-  return { kind: 'exact', romOffsets: [romOff >>> 0] };
-}
-
-function readRomCandidates(prgBytes, mapper, cpuAddr, fetchCtx = null, maxSet = 32) {
-  const physicalRom = resolvePhysicalRomIdentity(mapper, cpuAddr, fetchCtx, maxSet);
-  if (physicalRom.kind === 'unknown' || !Array.isArray(physicalRom.romOffsets) || !physicalRom.romOffsets.length) {
-    return { kind: 'unknown', physicalRom, bytes: [] };
-  }
-  const bytes = [];
-  for (const romOff of physicalRom.romOffsets) {
-    if (romOff < 0 || romOff >= prgBytes.length) return { kind: 'unknown', physicalRom: { kind: 'unknown', romOffsets: [] }, bytes: [] };
-    bytes.push(prgBytes[romOff] & 0xff);
-  }
-  return { kind: physicalRom.kind, physicalRom, bytes };
-}
-
-function readPrgAtCpu(prgBytes, mapper, cpuAddr, fetchCtx = null) {
-  const read = readRomCandidates(prgBytes, mapper, cpuAddr, fetchCtx, 1);
-  if (read.kind !== 'exact' || !read.bytes.length) return null;
-  return read.bytes[0] & 0xff;
-}
-
 function trackedFromRomRead(read, prov, spanStartRomOff) {
   if (!read || read.kind === 'unknown' || !Array.isArray(read.bytes) || !read.bytes.length) {
     return trackedWith(vUnknown(), bUnknown8(), prov, spanStartRomOff);
@@ -108,19 +47,6 @@ function trackedFromRomRead(read, prov, spanStartRomOff) {
   const abs = uniqueBytes.length === 1 ? vConst8(uniqueBytes[0]) : vSet8(uniqueBytes);
   const bits = joinBitsForConstBytes(uniqueBytes);
   return trackedWith(abs, bits, prov, spanStartRomOff);
-}
-
-function canonicalizeCpuAddr(addr) {
-  const a = addr & 0xffff;
-  if (a < 0x2000) {
-    const canon = a & 0x07ff;
-    if (canon < 0x0100) return { space: 'zp', addr: canon };
-    return { space: 'ram', addr: canon };
-  }
-  if (a >= 0x6000 && a < 0x8000) return { space: 'prgram', addr: a };
-  if (a >= 0x2000 && a < 0x4020) return { space: 'io', addr: a };
-  if (a >= 0x8000) return { space: 'rom', addr: a };
-  return { space: 'other', addr: a };
 }
 
 function spanEndFromLine(line) {
@@ -168,12 +94,18 @@ function emitZpPtr16(observationCollector, hooks, payload, observationContext = 
   maybeEmit(hooks, 'onZpPtr16', enriched);
 }
 
-function observationContextForBlock(blockId, blockContextIndex) {
-  if (!blockContextIndex || typeof blockId !== 'string') return { blockId, entryFamilies: [], functionIds: [] };
-  const familySet = blockContextIndex.blockFamiliesById?.get(blockId) || new Set();
-  const functionSet = blockContextIndex.blockFunctionIdsById?.get(blockId) || new Set();
+function emitValueFlow(observationCollector, hooks, payload, observationContext = null) {
+  const enriched = withObservationContext(payload, observationContext);
+  maybeRecord(observationCollector, 'recordValueFlow', enriched);
+  maybeEmit(hooks, 'onValueFlow', enriched);
+}
+
+function observationContextForRawBlock(rawBlockId, blockContextIndex) {
+  if (!blockContextIndex || typeof rawBlockId !== 'string') return { rawBlockId, entryFamilies: [], functionIds: [] };
+  const familySet = blockContextIndex.rawBlockFamiliesById?.get(rawBlockId) || new Set();
+  const functionSet = blockContextIndex.rawBlockFunctionIdsById?.get(rawBlockId) || new Set();
   return {
-    blockId,
+    rawBlockId,
     entryFamilies: Array.from(familySet).sort(),
     functionIds: Array.from(functionSet).sort()
   };
@@ -230,19 +162,12 @@ function joinProvList(provs) {
   return out;
 }
 
-function enumerateTrackedAbs(tracked, cap = 16) {
-  if (!tracked?.abs) return null;
-  return vEnumerate(tracked.abs, cap);
+function enumerateTrackedValues(tracked, cap = 16) {
+  return enumerateTrackedByteValues(tracked, cap)?.values || null;
 }
 
-function normalizeCpuAddrSet(cpuAddrs, maxSet = 16) {
-  const unique = Array.from(new Set((cpuAddrs || [])
-    .map((addr) => (typeof addr === 'number' ? addr : Number(addr)))
-    .filter((addr) => Number.isFinite(addr))
-    .map((addr) => addr & 0xffff))).sort((a, b) => a - b);
-  if (!unique.length) return null;
-  if (unique.length > Math.max(1, maxSet | 0)) return null;
-  return unique;
+function trackedValueEnumerationSource(tracked, cap = 16) {
+  return enumerateTrackedByteValues(tracked, cap)?.source || null;
 }
 
 const READ_ADDRESS_SET_CAP = 32;
@@ -333,33 +258,33 @@ function resolveAddressSetForLine(state, line, { prgBytes }, maxSet = 16) {
     const op = read8(prgBytes, romOff, 1) & 0xff;
     const idxReg = mode === 'zp_x' ? 'X' : 'Y';
     const idx = getReg(state, idxReg);
-    const idxVals = enumerateTrackedAbs(idx, maxSet);
+    const idxVals = enumerateTrackedValues(idx, maxSet);
     if (!idxVals?.length) return null;
     const cpuAddrs = normalizeCpuAddrSet(idxVals.map((v) => zpAddrFromModeOperand(op, v)), maxSet);
     if (!cpuAddrs) return null;
-    return { kind: 'cpu_set', cpuAddrs, baseCpuAddr: op & 0xff, indexSource: idxReg, indexTracked: idx, addrProv: buildAddrProv(op, idx, idxReg) };
+    return { kind: 'cpu_set', cpuAddrs, baseCpuAddr: op & 0xff, indexSource: idxReg, indexTracked: idx, indexValues: idxVals.map((value) => value & 0xff), indexValueSource: trackedValueEnumerationSource(idx, maxSet), addrProv: buildAddrProv(op, idx, idxReg) };
   }
 
   if (mode === 'abs_x' || mode === 'abs_y') {
     const base = read16le(prgBytes, romOff, 1);
     const idxReg = mode === 'abs_x' ? 'X' : 'Y';
     const idx = getReg(state, idxReg);
-    const idxVals = enumerateTrackedAbs(idx, maxSet);
+    const idxVals = enumerateTrackedValues(idx, maxSet);
     if (!idxVals?.length) return null;
     const cpuAddrs = normalizeCpuAddrSet(idxVals.map((v) => (base + v) & 0xffff), maxSet);
     if (!cpuAddrs) return null;
-    return { kind: 'cpu_set', cpuAddrs, baseCpuAddr: base, indexSource: idxReg, indexTracked: idx, addrProv: buildAddrProv(base, idx, idxReg) };
+    return { kind: 'cpu_set', cpuAddrs, baseCpuAddr: base, indexSource: idxReg, indexTracked: idx, indexValues: idxVals.map((value) => value & 0xff), indexValueSource: trackedValueEnumerationSource(idx, maxSet), addrProv: buildAddrProv(base, idx, idxReg) };
   }
 
   if (mode === 'ind_y') {
     const ptrZp = read8(prgBytes, romOff, 1) & 0xff;
     const y = getReg(state, 'Y');
-    const yVals = enumerateTrackedAbs(y, maxSet);
+    const yVals = enumerateTrackedValues(y, maxSet);
     if (!yVals?.length) return null;
     const lo = state.zp.get(ptrZp) || makeTracked();
     const hi = state.zp.get((ptrZp + 1) & 0xff) || makeTracked();
-    const loVals = enumerateTrackedAbs(lo, maxSet);
-    const hiVals = enumerateTrackedAbs(hi, maxSet);
+    const loVals = enumerateTrackedValues(lo, maxSet);
+    const hiVals = enumerateTrackedValues(hi, maxSet);
     if (!loVals?.length || !hiVals?.length) return null;
     if ((loVals.length * hiVals.length * yVals.length) > maxSet) return null;
     const cpuAddrs = [];
@@ -377,6 +302,8 @@ function resolveAddressSetForLine(state, line, { prgBytes }, maxSet = 16) {
       ptrZp,
       indexSource: 'Y',
       indexTracked: y,
+      indexValues: yVals.map((value) => value & 0xff),
+      indexValueSource: trackedValueEnumerationSource(y, maxSet),
       addrProv: pAdd16(ptrProvFromZp(ptrZp, lo, hi), y.prov || pUnknown())
     };
   }
@@ -384,7 +311,7 @@ function resolveAddressSetForLine(state, line, { prgBytes }, maxSet = 16) {
   if (mode === 'ind_x') {
     const zpBase = read8(prgBytes, romOff, 1) & 0xff;
     const x = getReg(state, 'X');
-    const xVals = enumerateTrackedAbs(x, maxSet);
+    const xVals = enumerateTrackedValues(x, maxSet);
     if (!xVals?.length) return null;
     if (xVals.length > maxSet) return null;
     const cpuAddrs = [];
@@ -393,8 +320,8 @@ function resolveAddressSetForLine(state, line, { prgBytes }, maxSet = 16) {
       const ptrZp = (zpBase + xByte) & 0xff;
       const lo = state.zp.get(ptrZp) || makeTracked();
       const hi = state.zp.get((ptrZp + 1) & 0xff) || makeTracked();
-      const loVals = enumerateTrackedAbs(lo, maxSet);
-      const hiVals = enumerateTrackedAbs(hi, maxSet);
+      const loVals = enumerateTrackedValues(lo, maxSet);
+      const hiVals = enumerateTrackedValues(hi, maxSet);
       if (!loVals?.length || !hiVals?.length) return null;
       if ((cpuAddrs.length + (loVals.length * hiVals.length)) > maxSet) return null;
       for (const loByte of loVals) {
@@ -410,6 +337,8 @@ function resolveAddressSetForLine(state, line, { prgBytes }, maxSet = 16) {
       ptrZp: null,
       indexSource: 'X',
       indexTracked: x,
+      indexValues: xVals.map((value) => value & 0xff),
+      indexValueSource: trackedValueEnumerationSource(x, maxSet),
       addrProv: provs.length === 1 ? provs[0] : joinProvList(provs)
     };
   }
@@ -440,40 +369,68 @@ function readRomCandidatesForAddrSet(prgBytes, mapper, cpuAddrs, fetchCtx = null
   };
 }
 
-function readTrackedFromAddressSet(state, addrInfo) {
-  const cpuAddrs = normalizeCpuAddrSet(addrInfo?.cpuAddrs || [], READ_ADDRESS_SET_CAP);
+function readTrackedFromAddressSet(state, addrInfo, spanStartRomOff = null) {
+  const rawCpuAddrs = Array.isArray(addrInfo?.cpuAddrs) && addrInfo.cpuAddrs.length
+    ? addrInfo.cpuAddrs
+    : (typeof addrInfo?.cpuAddr === 'number' ? [addrInfo.cpuAddr] : []);
+  const cpuAddrs = normalizeCpuAddrSet(rawCpuAddrs, READ_ADDRESS_SET_CAP);
   if (!cpuAddrs?.length) return null;
+
   const canonList = [];
   for (const cpuAddr of cpuAddrs) {
     const canon = canonicalizeCpuAddr(cpuAddr);
     if (!(canon.space === 'zp' || canon.space === 'ram' || canon.space === 'prgram')) return null;
     canonList.push(canon);
   }
+
   const absVals = [];
   const provs = [];
   const spanStarts = [];
   let bits = null;
+  let allCellsEnumerable = true;
+
   for (const canon of canonList) {
     const cell = getMem8(state, canon);
-    const vals = vEnumerate(cell.abs, 16);
-    if (!vals?.length) return null;
-    absVals.push(...vals);
-    provs.push(pReadMem8(canon.space, canon.addr, cell.prov));
-    if (typeof cell.spanStartRomOff === 'number') spanStarts.push(cell.spanStartRomOff >>> 0);
-    bits = bits ? bJoin(bits, cell.bits) : cell.bits;
+    const vals = enumerateTrackedValues(cell, 16);
+    if (vals?.length) {
+      absVals.push(...vals);
+    } else {
+      allCellsEnumerable = false;
+    }
+
+    provs.push(pReadMem8(canon.space, canon.addr, cell.prov || pUnknown()));
+    spanStarts.push((typeof cell.spanStartRomOff === 'number')
+      ? (cell.spanStartRomOff >>> 0)
+      : (typeof spanStartRomOff === 'number' ? (spanStartRomOff >>> 0) : null));
+    bits = bits ? bJoin(bits, cell.bits || bUnknown8()) : (cell.bits || bUnknown8());
   }
-  const abs = vSet8(absVals);
+
+  const abs = allCellsEnumerable ? vSet8(absVals) : vUnknown();
+  const cleanSpanStarts = spanStarts.filter((value) => typeof value === 'number');
   return {
-    tracked: trackedWith(abs, bits || bUnknown8(), joinProvList(provs), spanStarts.length ? Math.min(...spanStarts) : null),
+    tracked: trackedWith(abs, bits || bUnknown8(), joinProvList(provs), cleanSpanStarts.length ? Math.min(...cleanSpanStarts) : null),
     canonList
   };
 }
 
 function tryReadIndexedRom(prgBytes, mapper, fetchCtx, baseCpuAddr, indexTracked, indexSource, spanStartRomOff) {
-  const idxVals = vEnumerate(indexTracked?.abs, 32);
+  const idxEnumeration = enumerateTrackedByteValues(indexTracked, 32);
+  const idxVals = idxEnumeration?.values || null;
   const addrProv = buildAddrProv(baseCpuAddr, indexTracked, indexSource);
   const prov = pReadRom8(addrProv, indexSource || null);
-  if (!idxVals || idxVals.length === 0) return null;
+  if (!idxVals || idxVals.length === 0) {
+    return {
+      tracked: trackedWith(vUnknown(), bUnknown8(), prov, spanStartRomOff),
+      cpuAddrs: [],
+      exactCpuAddr: null,
+      indexSource,
+      indexValues: [],
+      indexValueSource: null,
+      addrProv,
+      physicalRom: { kind: 'unknown', romOffsets: [] },
+      unresolvedIndex: true
+    };
+  }
 
   const bytes = [];
   const cpuAddrs = [];
@@ -487,6 +444,8 @@ function tryReadIndexedRom(prgBytes, mapper, fetchCtx, baseCpuAddr, indexTracked
         cpuAddrs: [],
         exactCpuAddr: null,
         indexSource,
+        indexValues: idxVals.map((value) => value & 0xff),
+        indexValueSource: idxEnumeration?.source || null,
         addrProv,
         physicalRom: { kind: 'unknown', romOffsets: [] }
       };
@@ -503,6 +462,8 @@ function tryReadIndexedRom(prgBytes, mapper, fetchCtx, baseCpuAddr, indexTracked
       cpuAddrs: [],
       exactCpuAddr: null,
       indexSource,
+      indexValues: idxVals.map((value) => value & 0xff),
+      indexValueSource: idxEnumeration?.source || null,
       addrProv,
       physicalRom: { kind: 'unknown', romOffsets: [] }
     };
@@ -514,11 +475,12 @@ function tryReadIndexedRom(prgBytes, mapper, fetchCtx, baseCpuAddr, indexTracked
     cpuAddrs,
     exactCpuAddr: cpuAddrs.length === 1 ? cpuAddrs[0] : null,
     indexSource,
+    indexValues: idxVals.map((value) => value & 0xff),
+    indexValueSource: idxEnumeration?.source || null,
     addrProv,
     physicalRom
   };
 }
-
 function maybeOutcomeFlagsForImmCompare(abs, imm) {
   const x = imm & 0xff;
   const v = abs || vUnknown();
@@ -570,7 +532,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
   const m = line.mnemonic;
   const mode = normalizeMode(line.mode);
   const romOff = line.romOff >>> 0;
-  const observationContext = observationContextForBlock(options?.blockId || null, options?.blockContextIndex || null);
+  const observationContext = observationContextForRawBlock(options?.rawBlockId || null, options?.blockContextIndex || null);
 
   if (options?.strictBranchAdjacencyFacts) {
     const consumesCmp = (m === 'BEQ' || m === 'BNE' || m === 'BCC' || m === 'BCS');
@@ -587,31 +549,40 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     const tracked = trackedWith(abs, bits, prov, romOff);
     const regName = m === 'LDA' ? 'A' : m === 'LDX' ? 'X' : 'Y';
     setReg(state, regName, tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'immLoad', dstReg: regName, imm, value: tracked, prov, inputProvs: [] }, observationContext);
     state.lastNZ = { reg: regName };
     return;
   }
 
   if (m === 'TAX') {
     const a = getReg(state, 'A');
-    setReg(state, 'X', { ...a });
+    const tracked = { ...a };
+    setReg(state, 'X', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'X', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'X' };
     return;
   }
   if (m === 'TAY') {
     const a = getReg(state, 'A');
-    setReg(state, 'Y', { ...a });
+    const tracked = { ...a };
+    setReg(state, 'Y', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'Y', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'Y' };
     return;
   }
   if (m === 'TXA') {
     const x = getReg(state, 'X');
-    setReg(state, 'A', { ...x });
+    const tracked = { ...x };
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'A', srcRegs: ['X'], value: tracked, prov: tracked.prov, inputProvs: [x.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     return;
   }
   if (m === 'TYA') {
     const y = getReg(state, 'Y');
-    setReg(state, 'A', { ...y });
+    const tracked = { ...y };
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'A', srcRegs: ['Y'], value: tracked, prov: tracked.prov, inputProvs: [y.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     return;
   }
@@ -633,21 +604,27 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
   if (m === 'AND' && mode === 'imm') {
     const imm = read8(prgBytes, romOff, 1);
     const a = getReg(state, 'A');
-    setReg(state, 'A', trackedWith(vAnd8(a.abs, imm), bAndImm(a.bits, imm), pAnd8(a.prov, imm), a.spanStartRomOff));
+    const tracked = trackedWith(vAnd8(a.abs, imm), bAndImm(a.bits, imm), pAnd8(a.prov, imm), a.spanStartRomOff);
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     return;
   }
   if (m === 'ORA' && mode === 'imm') {
     const imm = read8(prgBytes, romOff, 1);
     const a = getReg(state, 'A');
-    setReg(state, 'A', trackedWith(vOr8(a.abs, imm), bOrImm(a.bits, imm), pOr8(a.prov, imm), a.spanStartRomOff));
+    const tracked = trackedWith(vOr8(a.abs, imm), bOrImm(a.bits, imm), pOr8(a.prov, imm), a.spanStartRomOff);
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     return;
   }
   if (m === 'EOR' && mode === 'imm') {
     const imm = read8(prgBytes, romOff, 1);
     const a = getReg(state, 'A');
-    setReg(state, 'A', trackedWith(vXor8(a.abs, imm), bXorImm(a.bits, imm), pXor8(a.prov, imm), a.spanStartRomOff));
+    const tracked = trackedWith(vXor8(a.abs, imm), bXorImm(a.bits, imm), pXor8(a.prov, imm), a.spanStartRomOff);
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     return;
   }
@@ -671,7 +648,9 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       }
     }
 
-    setReg(state, 'A', trackedWith(abs, bits, prov, a.spanStartRomOff));
+    const tracked = trackedWith(abs, bits, prov, a.spanStartRomOff);
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     state.C = null;
     return;
@@ -679,14 +658,18 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
 
   if (m === 'ASL' && mode === 'acc') {
     const a = getReg(state, 'A');
-    setReg(state, 'A', trackedWith(vShl1(a.abs), bShl1(a.bits), pShl1(a.prov), a.spanStartRomOff));
+    const tracked = trackedWith(vShl1(a.abs), bShl1(a.bits), pShl1(a.prov), a.spanStartRomOff);
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'accTransform', dstReg: 'A', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     state.C = null;
     return;
   }
   if (m === 'LSR' && mode === 'acc') {
     const a = getReg(state, 'A');
-    setReg(state, 'A', trackedWith(vShr1(a.abs), bShr1(a.bits), pShr1(a.prov), a.spanStartRomOff));
+    const tracked = trackedWith(vShr1(a.abs), bShr1(a.bits), pShr1(a.prov), a.spanStartRomOff);
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'accTransform', dstReg: 'A', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
     state.lastNZ = { reg: 'A' };
     state.C = null;
     return;
@@ -703,7 +686,9 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       abs = vConst8(v);
       bits = bConst8(v);
     }
-    setReg(state, reg, trackedWith(abs, bits, pAdd8(base.prov, delta), base.spanStartRomOff));
+    const tracked = trackedWith(abs, bits, pAdd8(base.prov, delta), base.spanStartRomOff);
+    setReg(state, reg, tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'regDelta', dstReg: reg, srcRegs: [reg], imm: delta & 0xff, value: tracked, prov: tracked.prov, inputProvs: [base.prov] }, observationContext);
     state.lastNZ = { reg };
     return;
   }
@@ -726,7 +711,9 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
         bits = bConst8(v);
       }
       const spanStart = (typeof cell.spanStartRomOff === 'number') ? cell.spanStartRomOff : romOff;
-      setMem8(state, canon, trackedWith(abs, bits, pAdd8(cell.prov, delta), spanStart));
+      const tracked = trackedWith(abs, bits, pAdd8(cell.prov, delta), spanStart);
+      setMem8(state, canon, tracked);
+      emitValueFlow(observationCollector, hooks, { line, opKind: 'memDelta', dst: canon, imm: delta & 0xff, value: tracked, prov: tracked.prov, inputProvs: [cell.prov] }, observationContext);
     }
     return;
   }
@@ -742,18 +729,33 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       if (indexedRom) {
         setReg(state, regName, indexedRom.tracked);
         state.lastNZ = { reg: regName };
-        if (indexedRom.physicalRom?.kind && indexedRom.physicalRom.kind !== 'unknown') {
-          const src = {
-            space: 'rom',
-            addr: (indexedRom.exactCpuAddr != null ? indexedRom.exactCpuAddr : baseCpuAddr) & 0xffff,
-            romOff: indexedRom.physicalRom.kind === 'exact' ? (indexedRom.physicalRom.romOffsets?.[0] ?? null) : null,
-            physicalRom: indexedRom.physicalRom,
-            ptrZp: null,
+        const src = {
+          space: 'rom',
+          addr: (indexedRom.exactCpuAddr != null ? indexedRom.exactCpuAddr : baseCpuAddr) & 0xffff,
+          romOff: indexedRom.physicalRom?.kind === 'exact' ? (indexedRom.physicalRom.romOffsets?.[0] ?? null) : null,
+          physicalRom: indexedRom.physicalRom || { kind: 'unknown', romOffsets: [] },
+          ptrZp: null,
+          indexSource: idxReg,
+          baseCpuAddr: baseCpuAddr & 0xffff,
+          unresolvedIndex: !!indexedRom.unresolvedIndex
+        };
+        emitRead(observationCollector, hooks, {
+          line,
+          dstReg: regName,
+          src,
+          value: indexedRom.tracked,
+          prov: indexedRom.tracked.prov,
+          addrInfo: {
+            baseCpuAddr,
             indexSource: idxReg,
-            baseCpuAddr: baseCpuAddr & 0xffff
-          };
-          emitRead(observationCollector, hooks, { line, dstReg: regName, src, value: indexedRom.tracked, prov: indexedRom.tracked.prov, addrInfo: { baseCpuAddr, indexSource: idxReg, indexTracked: idxTracked, physicalRom: indexedRom.physicalRom } }, observationContext);
-        }
+            indexTracked: idxTracked,
+            indexValues: indexedRom.indexValues,
+            indexValueSource: indexedRom.indexValueSource,
+            addrProv: indexedRom.addrProv,
+            physicalRom: indexedRom.physicalRom || { kind: 'unknown', romOffsets: [] },
+            unresolvedIndex: !!indexedRom.unresolvedIndex
+          }
+        }, observationContext);
         return;
       }
     }
@@ -798,7 +800,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       }
     }
 
-    const memRead = readTrackedFromAddressSet(state, addrInfo);
+    const memRead = readTrackedFromAddressSet(state, addrInfo, romOff);
     if (memRead) {
       const tracked = memRead.tracked;
       setReg(state, regName, tracked);
@@ -903,7 +905,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     }
 
     if (!rhsTracked) {
-      const memRead = readTrackedFromAddressSet(state, addrInfo);
+      const memRead = readTrackedFromAddressSet(state, addrInfo, romOff);
       if (memRead) {
         rhsTracked = memRead.tracked;
         const vals = vEnumerate(rhsTracked.abs, 16);
@@ -1053,12 +1055,12 @@ export async function runVsaEngine({
       }
 
       const blockFetchCtx = block.fetchCtx || mapper.initialFetchCtx();
-      maybeEmit(hooks, 'onInstructionStart', { line, blockId: bid, state: cur, ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
+      maybeEmit(hooks, 'onInstructionStart', { line, rawBlockId: bid, state: cur, ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
       const wantsInstructionEnd = typeof hooks?.onInstructionEnd === 'function';
       const beforeState = wantsInstructionEnd ? cloneState(cur) : null;
-      applyInstruction(cur, line, { prgBytes, mapper, fetchCtx: blockFetchCtx }, observationCollector, hooks, { strictBranchAdjacencyFacts, blockId: bid, blockContextIndex });
+      applyInstruction(cur, line, { prgBytes, mapper, fetchCtx: blockFetchCtx }, observationCollector, hooks, { strictBranchAdjacencyFacts, rawBlockId: bid, blockContextIndex });
       if (wantsInstructionEnd) {
-        hooks.onInstructionEnd({ line, blockId: bid, beforeState, afterState: cloneState(cur), ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
+        hooks.onInstructionEnd({ line, rawBlockId: bid, beforeState, afterState: cloneState(cur), ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
       }
       if (line.flow.type === 'branch') branchMnemonic = line.mnemonic;
     }
@@ -1096,7 +1098,7 @@ export async function runVsaEngine({
   }
 
   return {
-    inStatesByBlockId: inStates,
+    inStatesByRawBlockId: inStates,
     observations: observationCollector ? observationCollector.getResult() : null
   };
 }
