@@ -1,4 +1,4 @@
-import { fmtHex } from '../../utils/hexUtils.js';
+import { fmtHex } from '../../utils/numberUtils.js';
 
 function edgeKindForRaw(kind) {
   if (kind === 'call') return 'call';

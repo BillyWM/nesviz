@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { formatKiB } from '../../shared/utils/byteFormatUtils.js';
-import { parseLeadingInt } from '../../shared/utils/numberParseUtils.js';
+import { formatKiB } from '../../shared/utils/byteUtils.js';
+import { parseLeadingInt } from '../../shared/utils/numberUtils.js';
 
 const MAPPER_NAMES = Object.freeze({
   0: 'NROM',

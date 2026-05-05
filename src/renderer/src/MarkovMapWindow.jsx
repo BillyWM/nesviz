@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { fmtHex } from '../../shared/utils/hexUtils.js';
-import { fmtMetric, fmtPercent } from '../../shared/utils/numberFormatUtils.js';
+import { fmtHex } from '../../shared/utils/numberUtils.js';
+import { fmtMetric, fmtPercent } from '../../shared/utils/numberUtils.js';
 
 function markovColor(normalized) {
   const t = Math.max(0, Math.min(1, Number(normalized) || 0));

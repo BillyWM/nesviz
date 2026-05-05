@@ -1,6 +1,6 @@
-import { fmtHex } from '../../../shared/utils/hexUtils.js';
-import { parseBytesText } from '../../../shared/utils/byteTextUtils.js';
-import { u16le } from '../../../shared/utils/binaryReadUtils.js';
+import { fmtHex } from '../../../shared/utils/numberUtils.js';
+import { parseBytesText } from '../../../shared/utils/byteUtils.js';
+import { u16le } from '../../../shared/utils/byteUtils.js';
 
 function getAddrLabel(labelsByAddr, addr) {
   if (!labelsByAddr || typeof labelsByAddr !== 'object') return '';

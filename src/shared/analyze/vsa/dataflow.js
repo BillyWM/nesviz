@@ -1,5 +1,5 @@
-import { fmtHex as fmtHexRaw } from '../../utils/hexUtils.js';
-import { memKey } from '../../utils/addressKeyUtils.js';
+import { fmtHex as fmtHexRaw } from '../../utils/numberUtils.js';
+import { memKey } from '../../utils/addressUtils.js';
 import { addToArrayMap, addToSetMap } from '../../utils/collectionMapUtils.js';
 import { normalizePhysicalRom } from '../../utils/romIdentityUtils.js';
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { fmtHex } from '../../shared/utils/hexUtils.js';
+import { fmtHex } from '../../shared/utils/numberUtils.js';
 import { lerpChannel } from '../../shared/utils/colorUtils.js';
 
 const SECTION_GAP = 18;

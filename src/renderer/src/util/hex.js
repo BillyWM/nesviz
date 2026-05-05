@@ -1,4 +1,4 @@
-import { fmtHex } from '../../../shared/utils/hexUtils.js';
+import { fmtHex } from '../../../shared/utils/numberUtils.js';
 
 export function hexN(n, width) {
   return fmtHex(n >>> 0, width);

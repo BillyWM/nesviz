@@ -1,4 +1,4 @@
-import { fmtHex } from '../utils/hexUtils.js';
+import { fmtHex } from '../utils/numberUtils.js';
 
 export function hex2(b) {
   return fmtHex(b & 0xff, 2);

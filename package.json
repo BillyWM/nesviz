@@ -7,6 +7,8 @@
   "homepage": "https://billy.wenge-murphy.com/nesviz",
   "scripts": {
     "zipit": "node zipit.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -32,6 +34,7 @@
     "react-dom": "^19.2.1",
     "sass": "^1.97.3",
     "vite": "^7.2.6",
-    "elkjs": "^0.11.0"
+    "elkjs": "^0.11.0",
+    "vitest": "^4.0.0"
   }
 }

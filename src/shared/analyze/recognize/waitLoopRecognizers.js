@@ -1,5 +1,5 @@
-import { parseBytesText } from '../../utils/byteTextUtils.js';
-import { u16le } from '../../utils/binaryReadUtils.js';
+import { parseBytesText } from '../../utils/byteUtils.js';
+import { u16le } from '../../utils/byteUtils.js';
 
 // Wait-loop recognizers.
 //

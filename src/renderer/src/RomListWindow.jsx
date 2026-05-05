@@ -21,7 +21,7 @@ export default function RomListWindow() {
 
   // Sort state: one column at a time; null key means scan order.
   const [sort, setSort] = useState(() => ({ ...DEFAULT_SORT }));
-  const activeScanIdRef = useRef(null);
+  const activeScanTokenRef = useRef(null);
   const romListUiStateReadyRef = useRef(false);
 
   const sortedItems = useMemo(() => {
@@ -114,7 +114,10 @@ export default function RomListWindow() {
       done: true,
       cached: true
     });
-    activeScanIdRef.current = null;
+    if (activeScanTokenRef.current) {
+      window.nesviz?.cancelRomFolderScan?.(activeScanTokenRef.current);
+      activeScanTokenRef.current = null;
+    }
     return true;
   }, []);
 
@@ -180,76 +183,90 @@ export default function RomListWindow() {
     });
   }, [filterState, sort]);
 
-  // Streamed scan events from the main process.
-  useEffect(() => {
-    if (!window?.nesviz?.onRomFolderScan) return;
-    const unsub = window.nesviz.onRomFolderScan((msg) => {
-      if (!msg || msg.scanId !== activeScanIdRef.current) return;
-      if (msg.type === 'start') {
-        const nextFolderPaths = normalizeFolderPathsValue(msg.folderPaths);
-        if (nextFolderPaths.length) setFolderPaths(nextFolderPaths);
-        setScanMeta({ ...msg, folderPaths: nextFolderPaths, scannedCount: 0, foundCount: 0, errorCount: 0 });
-        return;
-      }
-      if (msg.type === 'batch') {
-        const chunk = Array.isArray(msg.items) ? msg.items : [];
-        setItems((prev) => prev.concat(chunk));
-        setScanMeta((prev) => ({
-          ...(prev || {}),
-          scannedCount: msg.scannedCount,
-          totalCount: msg.totalCount,
-          foundCount: msg.foundCount,
-          errorCount: msg.errorCount
-        }));
-        return;
-      }
-      if (msg.type === 'done') {
-        setScanMeta((prev) => ({
-          ...(prev || {}),
-          scannedCount: msg.scannedCount,
-          totalCount: msg.totalCount,
-          foundCount: msg.foundCount,
-          errorCount: msg.errorCount,
-          done: true
-        }));
-        setStatus('');
-        return;
-      }
-      if (msg.type === 'error') {
-        setScanMeta((prev) => ({ ...(prev || {}), error: msg.message || 'Scan error', done: true }));
-        setStatus(msg.message || 'Scan error');
-      }
-    });
-    return () => {
-      if (typeof unsub === 'function') unsub();
-    };
-  }, []);
 
   const startScan = useCallback(async (nextFolderPathsInput, opts = null) => {
     const nextFolderPaths = normalizeFolderPathsValue(nextFolderPathsInput);
     if (!nextFolderPaths.length) return;
+
+    if (activeScanTokenRef.current) {
+      window.nesviz?.cancelRomFolderScan?.(activeScanTokenRef.current);
+      activeScanTokenRef.current = null;
+    }
+
     setFolderPaths(nextFolderPaths);
     setItems([]);
-    setScanMeta({ folderPaths: nextFolderPaths, totalCount: 0, scannedCount: 0, foundCount: 0, errorCount: 0, done: false });
+    setScanMeta({ folderPaths: nextFolderPaths, totalCount: null, scannedCount: 0, foundCount: 0, errorCount: 0, done: false });
 
     try {
-      const scan = await window.nesviz?.startRomFolderScan?.(nextFolderPaths, opts || null);
+      let token = null;
+      const scan = window.nesviz?.startRomFolderScan?.(nextFolderPaths, opts || null, (msg) => {
+        if (!msg || token !== activeScanTokenRef.current) return;
+
+        if (msg.type === 'start') {
+          const msgFolderPaths = normalizeFolderPathsValue(msg.folderPaths);
+          if (msgFolderPaths.length) setFolderPaths(msgFolderPaths);
+          setScanMeta({
+            ...msg,
+            folderPaths: msgFolderPaths.length ? msgFolderPaths : nextFolderPaths,
+            scannedCount: 0,
+            foundCount: 0,
+            errorCount: 0,
+            done: false
+          });
+          return;
+        }
+
+        if (msg.type === 'batch') {
+          const chunk = Array.isArray(msg.items) ? msg.items : [];
+          if (chunk.length) setItems((prev) => prev.concat(chunk));
+          setScanMeta((prev) => ({
+            ...(prev || {}),
+            scannedCount: msg.scannedCount,
+            totalCount: msg.totalCount,
+            foundCount: msg.foundCount,
+            errorCount: msg.errorCount
+          }));
+          return;
+        }
+
+        if (msg.type === 'done') {
+          setScanMeta((prev) => ({
+            ...(prev || {}),
+            scannedCount: msg.scannedCount,
+            totalCount: msg.totalCount,
+            foundCount: msg.foundCount,
+            errorCount: msg.errorCount,
+            cached: !!msg.cached,
+            done: true
+          }));
+          setStatus('');
+          activeScanTokenRef.current = null;
+          return;
+        }
+
+        if (msg.type === 'error') {
+          const message = msg.message || 'Scan error';
+          setScanMeta((prev) => ({ ...(prev || {}), error: message, done: true }));
+          setStatus(message);
+          activeScanTokenRef.current = null;
+        }
+      });
+
       if (!scan?.ok) {
         const err = scan?.error || 'Scan failed';
         setStatus(err);
         setScanMeta((prev) => ({ ...(prev || {}), error: err, done: true }));
-        activeScanIdRef.current = null;
+        activeScanTokenRef.current = null;
         return;
       }
-      if (Array.isArray(scan.folderPaths) && scan.folderPaths.length) {
-        setFolderPaths(normalizeFolderPathsValue(scan.folderPaths));
-      }
-      activeScanIdRef.current = scan.scanId;
+
+      token = scan.token;
+      activeScanTokenRef.current = token;
       setStatus('Scanning folders…');
     } catch (e) {
       setStatus(`Scan failed: ${e?.message ?? String(e)}`);
       setScanMeta((prev) => ({ ...(prev || {}), error: 'Scan failed', done: true }));
-      activeScanIdRef.current = null;
+      activeScanTokenRef.current = null;
     }
   }, []);
 
@@ -271,6 +288,12 @@ export default function RomListWindow() {
     if (!folderPaths.length) return;
     await startScan(folderPaths, { force: true });
   }, [folderPaths, startScan]);
+
+  useEffect(() => () => {
+    if (!activeScanTokenRef.current) return;
+    window.nesviz?.cancelRomFolderScan?.(activeScanTokenRef.current);
+    activeScanTokenRef.current = null;
+  }, []);
 
   // Commands from main (e.g. "Open ROM Folder..." should prompt the folder picker).
   useEffect(() => {
@@ -326,7 +349,7 @@ export default function RomListWindow() {
           <span className="nv-badge nv-badge-bad">{scanMeta.error}</span>
         ) : scanMeta ? (
           <>
-            <span className="nv-badge">scanned {scanMeta.scannedCount || 0}/{scanMeta.totalCount || 0}</span>
+            <span className="nv-badge">{Number.isFinite(scanMeta.totalCount) ? `scanned ${scanMeta.scannedCount || 0}/${scanMeta.totalCount}` : `scanned ${scanMeta.scannedCount || 0}`}</span>
             <span className="nv-badge">found {scanMeta.foundCount || 0}</span>
             <span className="nv-badge">showing {visibleCount}/{totalCount}</span>
             {scanMeta.errorCount ? <span className="nv-badge">errors {scanMeta.errorCount}</span> : null}

@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 
 import { GRAPH_NODE_CSS_VARS } from '../../util/graphGeometry.js'
-import { fmtHex } from '../../../../shared/utils/hexUtils.js'
+import { fmtHex } from '../../../../shared/utils/numberUtils.js'
 
 function positionForSide(side, fallback) {
   if (side === 'NORTH') return Position.Top

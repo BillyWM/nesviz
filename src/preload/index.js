@@ -1,14 +1,60 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+let nextRomFolderScanToken = 1;
+const activeRomFolderScans = new Map();
+
+function closeRomFolderScan(token) {
+  const scan = activeRomFolderScans.get(token);
+  if (!scan) return;
+  activeRomFolderScans.delete(token);
+  try { scan.port.close(); } catch {}
+  try { ipcRenderer.send('nesviz:romFolderScan:cancel', { token }); } catch {}
+}
+
+function startRomFolderScan(folderPaths, opts = null, callback = null) {
+  if (typeof callback !== 'function') {
+    return { ok: false, error: 'ROM folder scan callback is required' };
+  }
+
+  if (typeof MessageChannel !== 'function') {
+    return { ok: false, error: 'MessageChannel is not available' };
+  }
+
+  const token = `romFolderScan:${nextRomFolderScanToken++}`;
+  const channel = new MessageChannel();
+  let finished = false;
+
+  function finish() {
+    if (finished) return;
+    finished = true;
+    activeRomFolderScans.delete(token);
+    try { channel.port1.close(); } catch {}
+  }
+
+  channel.port1.onmessage = (event) => {
+    const payload = event?.data;
+    callback(payload);
+    if (payload?.type === 'done' || payload?.type === 'error') finish();
+  };
+  if (typeof channel.port1.start === 'function') channel.port1.start();
+
+  activeRomFolderScans.set(token, { port: channel.port1 });
+  ipcRenderer.postMessage('nesviz:romFolderScan:start', {
+    token,
+    folderPaths,
+    force: !!opts?.force
+  }, [channel.port2]);
+
+  return { ok: true, token };
+}
+
 contextBridge.exposeInMainWorld('nesviz', {
   openRom: () => ipcRenderer.invoke('nesviz:openRom'),
   openRomPath: (filepath) => ipcRenderer.invoke('nesviz:openRomPath', { filepath }),
   getStartupRomPath: () => ipcRenderer.invoke('nesviz:getStartupRomPath'),
   selectRomFolder: () => ipcRenderer.invoke('nesviz:selectRomFolder'),
-  startRomFolderScan: (folderPaths, opts = null) => ipcRenderer.invoke('nesviz:startRomFolderScan', {
-    folderPaths,
-    force: !!opts?.force
-  }),
+  startRomFolderScan,
+  cancelRomFolderScan: (token) => closeRomFolderScan(token),
   getRomFolderCache: () => ipcRenderer.invoke('nesviz:getRomFolderCache'),
   getRomListUiState: () => ipcRenderer.invoke('nesviz:romlist:getUiState'),
   setRomListUiState: (state) => ipcRenderer.invoke('nesviz:romlist:setUiState', state),
@@ -145,13 +191,6 @@ contextBridge.exposeInMainWorld('nesviz', {
     const listener = (_evt, payload) => callback(payload);
     ipcRenderer.on('nesviz:labelsNavigate', listener);
     return () => ipcRenderer.removeListener('nesviz:labelsNavigate', listener);
-  },
-
-  // Streamed scan events from the main process.
-  onRomFolderScan: (callback) => {
-    const listener = (_evt, payload) => callback(payload);
-    ipcRenderer.on('nesviz:romFolderScan', listener);
-    return () => ipcRenderer.removeListener('nesviz:romFolderScan', listener);
   },
 
   // Streamed VSA progress updates from the analysis worker.

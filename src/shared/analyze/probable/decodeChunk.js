@@ -1,6 +1,6 @@
 import { disasmOneAtCtx } from '../../cpu6502/disasm.js';
 import { buildRepeatStats } from './semanticRepeats.js';
-import { s8, u16le } from '../../utils/binaryReadUtils.js';
+import { s8, u16le } from '../../utils/byteUtils.js';
 
 const BRANCHES = new Set(['BPL', 'BMI', 'BVC', 'BVS', 'BCC', 'BCS', 'BNE', 'BEQ']);
 

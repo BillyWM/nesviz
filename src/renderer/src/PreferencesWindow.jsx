@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { formatMb } from '../../shared/utils/byteFormatUtils.js';
+import { formatMb } from '../../shared/utils/byteUtils.js';
 
 function normalizeStats(raw) {
   return {

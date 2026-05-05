@@ -1,4 +1,4 @@
-import { fmtHex } from '../../../shared/utils/hexUtils.js';
+import { fmtHex } from '../../../shared/utils/numberUtils.js';
 
 export function formatHexDump(bytes) {
   if (!Array.isArray(bytes) || bytes.length === 0) return '';

@@ -1,6 +1,6 @@
 import { clamp8 } from '../../utils/numberUtils.js';
 import { normalizeNumberList, normalizeStringList, normalizeTokenList } from '../../utils/listNormalizeUtils.js';
-import { addressKey } from '../../utils/addressKeyUtils.js';
+import { addressKey } from '../../utils/addressUtils.js';
 import { normalizePhysicalRom, physicalRomKey } from '../../utils/romIdentityUtils.js';
 
 function mkSpan(start, end) {

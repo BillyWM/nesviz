@@ -3,14 +3,14 @@ import path from 'node:path';
 import { showRomListWindow } from './romListWindow.js';
 import { showPreferencesWindow } from './preferencesWindow.js';
 import { showLabelsWindow } from './labelsWindow.js';
-import { showTraceStreamerWindow } from './traceStreamerWindow.js';
+import { showTraceStreamerWindow } from './traceStreamer/traceStreamerWindow.js';
 import { showAnalysisLogWindow } from './analysisLogWindow.js';
 import { showTuningWindow } from './tuningWindow.js';
 import { showMemoryMapWindow } from './memoryMapWindow.js';
 import { showHeatmapWindow } from './heatmapWindow.js';
 import { showGraphWindow } from './graphWindow.js';
-import { showMarkovWindow } from './markovWindow.js';
-import { showMarkovMapWindow } from './markovMapWindow.js';
+import { showMarkovWindow } from './markov/markovWindow.js';
+import { showMarkovMapWindow } from './markov/markovMapWindow.js';
 
 let currentWin = null;
 let currentRecentRoms = [];

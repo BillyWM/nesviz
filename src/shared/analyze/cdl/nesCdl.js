@@ -1,4 +1,4 @@
-import { readUint32Le } from '../../utils/binaryReadUtils.js';
+import { readUint32Le } from '../../utils/byteUtils.js';
 
 const NES_CDL_FORMAT_MESEN2 = 'mesen2';
 const MESEN2_HEADER_SIZE = 9;

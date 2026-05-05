@@ -6,8 +6,8 @@ import { enumerateTrackedByteValues } from './trackedValue.js';
 import { pUnknown, pConst8, pConst16, pAdd16, pAdd8, pAnd8, pOr8, pXor8, pShl1, pShr1, pReadRom8, pReadMem8, pPtr16FromZp, pJoin } from './prov.js';
 import { createObservationCollector } from './observations.js';
 import { clamp8 } from '../../utils/numberUtils.js';
-import { read8, read16le } from '../../utils/binaryReadUtils.js';
-import { canonicalizeCpuAddr, normalizeCpuAddrSet } from '../../utils/addressNormalizeUtils.js';
+import { read8, read16le } from '../../utils/byteUtils.js';
+import { canonicalizeCpuAddr, normalizeCpuAddrSet } from '../../utils/addressUtils.js';
 import { normalizeRomOffsets, readRomCandidates } from '../../utils/romReadUtils.js';
 
 function isByteConst(abs) {

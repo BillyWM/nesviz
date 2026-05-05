@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeCpuAddr, normalizeRomOff } from '../shared/utils/addressNormalizeUtils.js';
+import { normalizeCpuAddr, normalizeRomOff } from '../shared/utils/addressUtils.js';
 import { normalizeWindowKey, normalizeWindowState } from './utils/windowStateNormalizeUtils.js';
 
 const USER_DATA_VERSION = 3;

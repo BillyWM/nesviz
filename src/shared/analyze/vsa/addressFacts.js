@@ -1,6 +1,6 @@
 import { addToSet } from '../../utils/collectionMapUtils.js';
 import { addMany } from '../../utils/collectionUtils.js';
-import { normalizeAddr } from '../../utils/addressNormalizeUtils.js';
+import { normalizeAddr } from '../../utils/addressUtils.js';
 import { normalizePhysicalRom } from '../../utils/romIdentityUtils.js';
 
 function makeFact(space, addr) {

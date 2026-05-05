@@ -1,4 +1,4 @@
-import { fmtHex } from '../../utils/hexUtils.js';
+import { fmtHex } from '../../utils/numberUtils.js';
 import { uniqueSortedNumbers, uniqueSortedStrings } from '../../utils/uniqueUtils.js';
 
 function lineEnd(line) {
