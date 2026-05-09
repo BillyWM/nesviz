@@ -114,6 +114,70 @@ function collectDataTablePois({ identityIndex, footprints, pointsOfInterest, pil
   }
 }
 
+function labelForPpuDataWrite(write) {
+  if (write?.ppuDest?.class === 'palettes') return 'Writes Palettes';
+  if (write?.ppuDest?.class === 'attributes') return 'Writes Attributes';
+  return null;
+}
+
+function kindForPpuDataWrite(write) {
+  if (write?.ppuDest?.class === 'palettes') return 'writesPalettes';
+  if (write?.ppuDest?.class === 'attributes') return 'writesAttributes';
+  return null;
+}
+
+function collectPpuDataWritePois({ identityIndex, ppuDataWrites, pointsOfInterest, pillsByBlockId }) {
+  const pillKeys = new Set();
+  const sortedWrites = Array.from(ppuDataWrites || []).sort((a, b) => {
+    const aRom = typeof a?.atRomOff === 'number' ? a.atRomOff : Number.MAX_SAFE_INTEGER;
+    const bRom = typeof b?.atRomOff === 'number' ? b.atRomOff : Number.MAX_SAFE_INTEGER;
+    if (aRom !== bRom) return aRom - bRom;
+    return String(a?.observationId || '').localeCompare(String(b?.observationId || ''));
+  });
+
+  for (const write of sortedWrites) {
+    const label = labelForPpuDataWrite(write);
+    const kind = kindForPpuDataWrite(write);
+    if (!label || !kind) continue;
+
+    const rawBlockId = typeof write?.rawBlockId === 'string' ? write.rawBlockId : null;
+    if (!rawBlockId) continue;
+    const displayBlock = getDisplayBlockForRawBlockId(rawBlockId, identityIndex);
+    if (!displayBlock) continue;
+    const displayBlockId = typeof displayBlock?.id === 'string' ? displayBlock.id : null;
+    if (!displayBlockId) continue;
+
+    const basisSpan = write?.basis?.romOffSpan && Number.isFinite(write.basis.romOffSpan.start) && Number.isFinite(write.basis.romOffSpan.end)
+      ? { start: write.basis.romOffSpan.start >>> 0, end: write.basis.romOffSpan.end >>> 0 }
+      : (typeof write?.atRomOff === 'number' ? { start: write.atRomOff >>> 0, end: (write.atRomOff >>> 0) + 1 } : null);
+    if (!basisSpan || basisSpan.end <= basisSpan.start) continue;
+
+    const poi = {
+      id: `${kind}:${basisSpan.start}:${basisSpan.end}:${String(write?.observationId || '')}`,
+      kind,
+      label,
+      pill: label,
+      basis: { romOffSpan: basisSpan },
+      meta: {
+        observationId: typeof write?.observationId === 'string' ? write.observationId : null,
+        rawBlockId,
+        ppuDestClass: write.ppuDest.class,
+        ppuDestCandidates: uniqNumbers(write.ppuDest.candidates || []),
+        ppuDestNormalizedCandidates: uniqNumbers(write.ppuDest.normalizedCandidates || []),
+        target: '$2007'
+      }
+    };
+    pointsOfInterest.push(poi);
+
+    const pillKey = `${displayBlockId}:${label}`;
+    if (!pillKeys.has(pillKey)) {
+      pillsByBlockId[displayBlockId] = pillsByBlockId[displayBlockId] || [];
+      if (!pillsByBlockId[displayBlockId].includes(label)) pillsByBlockId[displayBlockId].push(label);
+      pillKeys.add(pillKey);
+    }
+  }
+}
+
 function collectOamDmaPois({ identityIndex, transfers, pointsOfInterest, pillsByBlockId }) {
   const pillsAdded = new Set();
   const sortedTransfers = Array.from(transfers || []).sort((a, b) => {
@@ -175,11 +239,13 @@ export function collectPointsOfInterestFromVsa(analysis) {
   const identityIndex = buildDisplayBlockIdentityIndex({ displayBlocks: blocks, rawBlockIdAliases: analysis?.rawBlockIdAliases || null, rawToDisplayBlockIds: analysis?.rawToDisplayBlockIds || null });
   const footprints = Array.isArray(analysis?.memoryDiscoveries?.streamFootprints) ? analysis.memoryDiscoveries.streamFootprints : [];
   const oamDmaTransfers = Array.isArray(analysis?.memoryDiscoveries?.oamDmaTransfers) ? analysis.memoryDiscoveries.oamDmaTransfers : [];
+  const ppuDataWrites = Array.isArray(analysis?.vsaDataflow?.ppuDataWrites) ? analysis.vsaDataflow.ppuDataWrites : [];
   const pointsOfInterest = [];
   const pillsByBlockId = {};
 
   collectDataTablePois({ identityIndex, footprints, pointsOfInterest, pillsByBlockId });
   collectOamDmaPois({ identityIndex, transfers: oamDmaTransfers, pointsOfInterest, pillsByBlockId });
+  collectPpuDataWritePois({ identityIndex, ppuDataWrites, pointsOfInterest, pillsByBlockId });
 
   return { pointsOfInterest, pillsByBlockId };
 }

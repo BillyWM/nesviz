@@ -209,10 +209,16 @@ export function discoverCfg({
     if (s && typeof s.cpuAddr === 'number') {
       const confidence = s.confidence || 'certain';
       const leaderKind = s.leaderKind || (confidence === 'probable' ? 'soft' : 'hard');
-      const leaderReason = s.leaderReason || (confidence === 'probable'
-        ? { kind: 'probable_seed' }
-        : { kind: 'seed_entry' });
-      enqueueStart(s.cpuAddr, confidence, s.fetchCtx || fetchCtx, leaderKind, leaderReason);
+      const leaderReasons = Array.isArray(s.leaderReasons) && s.leaderReasons.length
+        ? s.leaderReasons
+        : [s.leaderReason || (confidence === 'probable'
+            ? { kind: 'candidate_seed', source: 'unknown' }
+            : { kind: 'seed_entry' })];
+      let rec = null;
+      for (const leaderReason of leaderReasons) {
+        rec = enqueueStart(s.cpuAddr, confidence, s.fetchCtx || fetchCtx, leaderKind, leaderReason);
+      }
+      if (!rec) enqueueStart(s.cpuAddr, confidence, s.fetchCtx || fetchCtx, leaderKind, null);
     }
   }
 
@@ -481,6 +487,8 @@ export function discoverCfg({
       romStart,
       romEnd,
       confidence: blockConfidence,
+      vsaRole: blockConfidence === 'probable' ? 'candidate' : 'confirmed',
+      candidate: blockConfidence === 'probable' ? { leaderReasons: rec.leaderReasons || [] } : null,
       ctxKey,
       fetchCtx: rec.fetchCtx,
       blockInstanceId: instId,

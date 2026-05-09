@@ -161,15 +161,31 @@ export function inferSpeculativeDispatchTargets({
     if (!candidates.length) continue;
 
     const seedKeysBefore = seedMap.size;
+    const targetCpuAddrs = Array.from(new Set(candidates.flatMap((c) => c.targetCpuAddrs || []))).sort((a, b) => a - b);
     for (const c of candidates) {
       for (const seed of c.seeds || []) {
         if (seedMap.size >= maxTotalSeedItems) break;
-        seedMap.set(seedKey(mapper, seed), seed);
+        const key = seedKey(mapper, seed);
+        const prev = seedMap.get(key);
+        const leaderReason = {
+          kind: 'speculative_dispatch_seed',
+          basis: c.basis || 'unknown',
+          sitePc: pc,
+          siteRomOff: Number.isFinite(site?.romOff) ? (site.romOff >>> 0) : null,
+          siteKind: site?.kind || null,
+          targetCpuAddrs
+        };
+        const next = {
+          ...seed,
+          confidence: 'probable',
+          leaderKind: 'soft',
+          leaderReasons: [...(prev?.leaderReasons || []), ...(seed.leaderReasons || []), leaderReason]
+        };
+        seedMap.set(key, next);
       }
     }
     if (seedMap.size === seedKeysBefore) continue;
 
-    const targetCpuAddrs = Array.from(new Set(candidates.flatMap((c) => c.targetCpuAddrs || []))).sort((a, b) => a - b);
     if (!Number.isFinite(site?.romOff)) continue;
     const siteRomOff = site.romOff >>> 0;
     artifacts.push({

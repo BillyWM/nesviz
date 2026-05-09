@@ -12,6 +12,7 @@
 }
 
 .nv-line {
+  position: relative;
   display: grid;
   // Split the legacy bytes space into bytes + label so the ASM column doesn't shift.
   grid-template-columns: 78px 70px 120px 50px 1fr;
@@ -24,6 +25,24 @@
   min-height: 22px;
 }
 
+
+.nv-confidence-rail-segment {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  pointer-events: none;
+}
+
+.nv-confidence-rail-segment.is-certain {
+  background: $accent;
+}
+
+.nv-confidence-rail-segment.is-probable {
+  background: $probable;
+}
+
 .nv-line > div {
   font-size: inherit !important;
   line-height: inherit !important;
@@ -31,6 +50,19 @@
 
 .nv-line:hover {
   background: $muted-bg;
+}
+
+
+.nv-line.is-raw-cfg-block-end {
+  border-bottom-width: 2px;
+}
+
+.nv-line.is-raw-cfg-block-end-certain {
+  border-bottom-color: $accent;
+}
+
+.nv-line.is-raw-cfg-block-end-probable {
+  border-bottom-color: goldenrod;
 }
 
 .nv-line.is-poi-marked {
@@ -63,7 +95,74 @@
 }
 
 .nv-col-asm {
+  position: relative;
   color: $text-strong !important;
+  padding-left: 30px;
+  min-width: 0;
+}
+
+.nv-loop-guide-gutter {
+  position: absolute;
+  left: 0;
+  top: -4px;
+  bottom: -4px;
+  width: 26px;
+  pointer-events: none;
+}
+
+.nv-loop-guide-segment {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.nv-loop-guide-segment::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(37, 99, 235, 0.78);
+}
+
+.nv-loop-guide-segment::after {
+  content: "";
+  display: none;
+  position: absolute;
+  left: 2px;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 2px;
+  background: rgba(37, 99, 235, 0.78);
+}
+
+.nv-loop-guide-segment.is-lane-0 { left: 0; }
+.nv-loop-guide-segment.is-lane-1 { left: 6px; }
+.nv-loop-guide-segment.is-lane-2 { left: 12px; }
+.nv-loop-guide-segment.is-lane-3 { left: 18px; }
+
+.nv-loop-guide-segment.is-start::before {
+  top: 50%;
+}
+
+.nv-loop-guide-segment.is-end::before {
+  bottom: 50%;
+}
+
+.nv-loop-guide-segment.is-start::after,
+.nv-loop-guide-segment.is-end::after {
+  display: block;
+}
+
+.nv-loop-guide-segment.is-flag-loop::before,
+.nv-loop-guide-segment.is-flag-loop::after {
+  background: rgba(107, 114, 128, 0.72);
 }
 
 .nv-inline-label {

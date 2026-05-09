@@ -1,4 +1,5 @@
 import { decodePrgCdlByte, isPrgDataObserved, NES_CDL_FORMAT_MESEN2 } from '../cdl/nesCdl.js';
+import { inclusiveRomSpanToSlice } from '../dataDiscoveries/romDataSpans.js';
 
 export const PRG_OCCUPANCY_UNKNOWN = 0;
 export const PRG_OCCUPANCY_CODE = 1;
@@ -13,25 +14,27 @@ export const PRG_OCC_SOURCE_CDL_CODE = 4;
 export function buildPrgOccupancy({
   prgSize,
   blocks,
-  memoryDiscoveries,
+  dataDiscoveries,
   cdlPrg = null,
   cdlFormat = NES_CDL_FORMAT_MESEN2
 }) {
   const size = Math.max(0, prgSize | 0);
   const analysisData = new Uint8Array(size);
   const analysisCode = new Uint8Array(size);
+  const analysisConfirmedCode = new Uint8Array(size);
+  const analysisProbableCode = new Uint8Array(size);
   const cdlData = new Uint8Array(size);
   const cdlCode = new Uint8Array(size);
   const byteTypes = new Uint8Array(size);
   const sourceTypes = new Uint8Array(size);
   const overlapBits = new Uint8Array(size);
 
-  for (const group of memoryDiscoveries?.groups || []) {
-    if (group?.space !== 'rom') continue;
-    for (const span of group?.spans || []) {
-      const start = Math.max(0, Math.min(size, Number(span?.start) | 0));
-      const end = Math.max(start, Math.min(size, (Number(span?.end) | 0) + 1));
-      for (let i = start; i < end; i++) analysisData[i] = 1;
+  for (const record of Array.isArray(dataDiscoveries?.records) ? dataDiscoveries.records : []) {
+    if (!record?.countsAsData) continue;
+    for (const span of Array.isArray(record?.romSpans) ? record.romSpans : []) {
+      const slice = inclusiveRomSpanToSlice(span, size);
+      if (!slice) continue;
+      for (let i = slice.start; i < slice.end; i++) analysisData[i] = 1;
     }
   }
 
@@ -41,7 +44,15 @@ export function buildPrgOccupancy({
     if (!Number.isFinite(romStart) || !Number.isFinite(romEnd)) continue;
     const start = Math.max(0, Math.min(size, romStart | 0));
     const end = Math.max(start, Math.min(size, romEnd | 0));
-    for (let i = start; i < end; i++) analysisCode[i] = 1;
+    const isProbable = block?.confidence === 'probable';
+    for (let i = start; i < end; i++) {
+      analysisCode[i] = 1;
+      if (isProbable) {
+        analysisProbableCode[i] = 1;
+      } else {
+        analysisConfirmedCode[i] = 1;
+      }
+    }
   }
 
   if (cdlPrg) {
@@ -54,6 +65,8 @@ export function buildPrgOccupancy({
   }
 
   let codeBytes = 0;
+  let confirmedCodeBytes = 0;
+  let probableCodeBytes = 0;
   let dataBytes = 0;
   let unknownBytes = 0;
   let overlapByteCount = 0;
@@ -71,6 +84,7 @@ export function buildPrgOccupancy({
         byteTypes[i] = PRG_OCCUPANCY_CODE;
         sourceTypes[i] = PRG_OCC_SOURCE_CDL_CODE;
         codeBytes++;
+        confirmedCodeBytes++;
       } else {
         byteTypes[i] = PRG_OCCUPANCY_DATA;
         sourceTypes[i] = PRG_OCC_SOURCE_CDL_DATA;
@@ -84,6 +98,8 @@ export function buildPrgOccupancy({
         byteTypes[i] = PRG_OCCUPANCY_CODE;
         sourceTypes[i] = PRG_OCC_SOURCE_ANALYSIS_CODE;
         codeBytes++;
+        if (analysisConfirmedCode[i]) confirmedCodeBytes++;
+        else probableCodeBytes++;
       } else {
         byteTypes[i] = PRG_OCCUPANCY_DATA;
         sourceTypes[i] = PRG_OCC_SOURCE_ANALYSIS_DATA;
@@ -108,6 +124,10 @@ export function buildPrgOccupancy({
       unknownBytes,
       totalBytes,
       overlapByteCount,
+      confirmedCodeBytes,
+      probableCodeBytes,
+      confirmedCodePctOfCode: codeBytes ? (confirmedCodeBytes * 100) / codeBytes : 0,
+      probableCodePctOfCode: codeBytes ? (probableCodeBytes * 100) / codeBytes : 0,
       codePct: size ? (codeBytes * 100) / size : 0,
       dataPct: size ? (dataBytes * 100) / size : 0,
       unknownPct: size ? (unknownBytes * 100) / size : 0,

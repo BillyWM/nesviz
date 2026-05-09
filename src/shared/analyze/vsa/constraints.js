@@ -1,29 +1,19 @@
 import { pFilter } from './prov.js';
 import { vFilterEq, vFilterNe, vFilterLt, vFilterGe, vFilterSign, vIsEmpty } from './value.js';
 import { cloneState, makeTracked } from './state.js';
-
-// Branch constraint refinement. 🤖
-//
-// Goal: take cheap flag-adjacency facts (CMP/CPX/CPY #imm, or last NZ-producing op) and use them to
-// narrow abstract values on each outgoing edge of a conditional branch. 🤖
-//
-// This is *not* a full 6502 flags model; it's an adjacency heuristic that preserves soundness by
-// only applying constraints when we are confident about the predicate source. 🤖
+import { flagReadByBranchMnemonic, branchTakenWhen } from './flags.js';
 
 function getReg(state, reg) {
   return state[reg] || makeTracked();
 }
 
 function applyRegFilter(baseTracked, absFiltered, pred) {
-  // Preserve bits + spanStart across value refinements.
-  // If we refined to a single constant, we can upgrade bits to fully-known.
   const bitsBase = baseTracked.bits || { knownMask: 0, knownValue: 0 };
   let bits = { ...bitsBase };
 
   if (absFiltered?.kind === 'const') {
     bits = { knownMask: 0xff, knownValue: absFiltered.v & 0xff };
   } else if (pred?.op === 'neg' || pred?.op === 'pos') {
-    // We can safely set the sign bit when filtering by BMI/BPL, as long as it doesn't conflict.
     const wantNeg = pred.op === 'neg';
     const alreadyKnown = (bits.knownMask & 0x80) !== 0;
     const alreadyNeg = (bits.knownValue & 0x80) !== 0;
@@ -63,54 +53,58 @@ function makeSignPred(wantNegative) {
   return { op: wantNegative ? 'neg' : 'pos' };
 }
 
-function filterFromCompare(state, branchMnemonic) {
-  const cmp = state.lastCmp;
-  if (!cmp) return { taken: null, fall: null };
+function compareSubject(source) {
+  return source?.subject?.kind === 'compare' ? source.subject : null;
+}
 
-  const base = getReg(state, cmp.reg);
-  const imm = cmp.imm & 0xff;
+function regResultSubject(source) {
+  const subject = source?.subject;
+  return subject?.kind === 'reg' && typeof subject.reg === 'string' ? subject.reg : null;
+}
 
-  // BEQ/BNE after CMP: equality/non-equality of the compared register. 🤖
+function filterFromCompareSource(state, branchMnemonic, source) {
+  const subject = compareSubject(source);
+  if (!subject || typeof subject.reg !== 'string' || typeof subject.imm !== 'number') return { taken: null, fall: null };
+
+  const reg = subject.reg;
+  const imm = subject.imm & 0xff;
+  const base = getReg(state, reg);
+
   if (branchMnemonic === 'BEQ' || branchMnemonic === 'BNE') {
     const takenAbs = branchMnemonic === 'BEQ' ? vFilterEq(base.abs, imm) : vFilterNe(base.abs, imm);
     const fallAbs = branchMnemonic === 'BEQ' ? vFilterNe(base.abs, imm) : vFilterEq(base.abs, imm);
     const taken = cloneState(state);
     const fall = cloneState(state);
-    taken[cmp.reg] = applyRegFilter(base, takenAbs, branchMnemonic === 'BEQ' ? makeEqPred(imm) : makeNePred(imm));
-    fall[cmp.reg] = applyRegFilter(base, fallAbs, branchMnemonic === 'BEQ' ? makeNePred(imm) : makeEqPred(imm));
-    taken.lastCmp = null;
-    fall.lastCmp = null;
+    taken[reg] = applyRegFilter(base, takenAbs, branchMnemonic === 'BEQ' ? makeEqPred(imm) : makeNePred(imm));
+    fall[reg] = applyRegFilter(base, fallAbs, branchMnemonic === 'BEQ' ? makeNePred(imm) : makeEqPred(imm));
     return { taken, fall };
   }
 
-  // BCC/BCS after CMP: unsigned < / >=. 🤖
   if (branchMnemonic === 'BCC' || branchMnemonic === 'BCS') {
     const takenAbs = branchMnemonic === 'BCC' ? vFilterLt(base.abs, imm) : vFilterGe(base.abs, imm);
     const fallAbs = branchMnemonic === 'BCC' ? vFilterGe(base.abs, imm) : vFilterLt(base.abs, imm);
     const taken = cloneState(state);
     const fall = cloneState(state);
-    taken[cmp.reg] = applyRegFilter(base, takenAbs, branchMnemonic === 'BCC' ? makeLtPred(imm) : makeGePred(imm));
-    fall[cmp.reg] = applyRegFilter(base, fallAbs, branchMnemonic === 'BCC' ? makeGePred(imm) : makeLtPred(imm));
-    taken.lastCmp = null;
-    fall.lastCmp = null;
+    taken[reg] = applyRegFilter(base, takenAbs, branchMnemonic === 'BCC' ? makeLtPred(imm) : makeGePred(imm));
+    fall[reg] = applyRegFilter(base, fallAbs, branchMnemonic === 'BCC' ? makeGePred(imm) : makeLtPred(imm));
     return { taken, fall };
   }
 
   return { taken: null, fall: null };
 }
 
-function filterFromNZ(state, branchMnemonic) {
-  const nz = state.lastNZ;
-  if (!nz) return { taken: null, fall: null };
-  const base = getReg(state, nz.reg);
+function filterFromResultSource(state, branchMnemonic, source) {
+  const reg = regResultSubject(source);
+  if (!reg) return { taken: null, fall: null };
+  const base = getReg(state, reg);
 
   if (branchMnemonic === 'BEQ' || branchMnemonic === 'BNE') {
     const takenAbs = branchMnemonic === 'BEQ' ? vFilterEq(base.abs, 0) : vFilterNe(base.abs, 0);
     const fallAbs = branchMnemonic === 'BEQ' ? vFilterNe(base.abs, 0) : vFilterEq(base.abs, 0);
     const taken = cloneState(state);
     const fall = cloneState(state);
-    taken[nz.reg] = applyRegFilter(base, takenAbs, branchMnemonic === 'BEQ' ? makeEqPred(0) : makeNePred(0));
-    fall[nz.reg] = applyRegFilter(base, fallAbs, branchMnemonic === 'BEQ' ? makeNePred(0) : makeEqPred(0));
+    taken[reg] = applyRegFilter(base, takenAbs, branchMnemonic === 'BEQ' ? makeEqPred(0) : makeNePred(0));
+    fall[reg] = applyRegFilter(base, fallAbs, branchMnemonic === 'BEQ' ? makeNePred(0) : makeEqPred(0));
     return { taken, fall };
   }
 
@@ -120,8 +114,8 @@ function filterFromNZ(state, branchMnemonic) {
     const fallAbs = vFilterSign(base.abs, !wantNeg);
     const taken = cloneState(state);
     const fall = cloneState(state);
-    taken[nz.reg] = applyRegFilter(base, takenAbs, makeSignPred(wantNeg));
-    fall[nz.reg] = applyRegFilter(base, fallAbs, makeSignPred(!wantNeg));
+    taken[reg] = applyRegFilter(base, takenAbs, makeSignPred(wantNeg));
+    fall[reg] = applyRegFilter(base, fallAbs, makeSignPred(!wantNeg));
     return { taken, fall };
   }
 
@@ -129,27 +123,50 @@ function filterFromNZ(state, branchMnemonic) {
 }
 
 function isFeasible(state) {
-  // If any tracked register is explicitly empty, treat the state as infeasible for propagation. 🤖
-  const regs = ['A', 'X', 'Y'];
-  for (const r of regs) {
+  for (const r of ['A', 'X', 'Y']) {
     if (vIsEmpty(state[r].abs)) return false;
   }
   return true;
 }
 
+function constrainFromKnownFlag(state, branchMnemonic, flag, takenWhen) {
+  const knownValue = state.flags?.[flag]?.knownValue;
+  if (!(knownValue === 0 || knownValue === 1)) return null;
+  const taken = knownValue === takenWhen ? cloneState(state) : null;
+  const fall = knownValue !== takenWhen ? cloneState(state) : null;
+  return { taken, fall };
+}
+
 export function constrainBranchEdges(state, branchMnemonic) {
-  // Prefer compare-derived facts over NZ-derived facts when both exist. 🤖
-  const fromCmp = filterFromCompare(state, branchMnemonic);
-  if (fromCmp.taken || fromCmp.fall) {
+  const flag = flagReadByBranchMnemonic(branchMnemonic);
+  const takenWhen = branchTakenWhen(branchMnemonic);
+  if (!flag || !(takenWhen === 0 || takenWhen === 1)) return { taken: null, fall: null };
+
+  const source = state.flags?.[flag]?.source || null;
+
+  const fromCompare = filterFromCompareSource(state, branchMnemonic, source);
+  if (fromCompare.taken || fromCompare.fall) {
     return {
-      taken: fromCmp.taken && isFeasible(fromCmp.taken) ? fromCmp.taken : null,
-      fall: fromCmp.fall && isFeasible(fromCmp.fall) ? fromCmp.fall : null
+      taken: fromCompare.taken && isFeasible(fromCompare.taken) ? fromCompare.taken : null,
+      fall: fromCompare.fall && isFeasible(fromCompare.fall) ? fromCompare.fall : null
     };
   }
 
-  const fromNz = filterFromNZ(state, branchMnemonic);
-  return {
-    taken: fromNz.taken && isFeasible(fromNz.taken) ? fromNz.taken : null,
-    fall: fromNz.fall && isFeasible(fromNz.fall) ? fromNz.fall : null
-  };
+  const fromResult = filterFromResultSource(state, branchMnemonic, source);
+  if (fromResult.taken || fromResult.fall) {
+    return {
+      taken: fromResult.taken && isFeasible(fromResult.taken) ? fromResult.taken : null,
+      fall: fromResult.fall && isFeasible(fromResult.fall) ? fromResult.fall : null
+    };
+  }
+
+  const fromKnownFlag = constrainFromKnownFlag(state, branchMnemonic, flag, takenWhen);
+  if (fromKnownFlag) {
+    return {
+      taken: fromKnownFlag.taken && isFeasible(fromKnownFlag.taken) ? fromKnownFlag.taken : null,
+      fall: fromKnownFlag.fall && isFeasible(fromKnownFlag.fall) ? fromKnownFlag.fall : null
+    };
+  }
+
+  return { taken: null, fall: null };
 }

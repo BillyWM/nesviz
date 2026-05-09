@@ -163,9 +163,7 @@ async function terminateActiveWorker() {
   if (!w) return;
   activeWorker = null;
   try {
-    // terminate() returns a Promise in modern Node, but older versions may return void.
-    const r = w.terminate();
-    if (r && typeof r.then === 'function') await r;
+    await w.terminate();
   } catch {
     // Ignore termination failures.
   }
@@ -200,9 +198,50 @@ function serializeFlowForRenderer(flow) {
   return out;
 }
 
-function serializeLineForRenderer(ln) {
+function lineBoundaryKey(ln) {
   if (!ln || typeof ln !== 'object') return null;
-  return {
+  if (typeof ln.romOff !== 'number') return null;
+  const len = (typeof ln.len === 'number' && ln.len > 0) ? (ln.len >>> 0) : 1;
+  return `${ln.romOff >>> 0}:${len}`;
+}
+
+function buildRawBlockById(rawAnalysis) {
+  const out = new Map();
+  const blocks = Array.isArray(rawAnalysis?.blocks) ? rawAnalysis.blocks : [];
+  for (const block of blocks) {
+    if (!block || typeof block.id !== 'string' || !block.id) continue;
+    out.set(block.id, block);
+  }
+  return out;
+}
+
+function rawCfgBlockEndKindsForDisplayBlock(displayBlock, rawBlockById) {
+  const out = new Map();
+  if (!displayBlock || !rawBlockById || typeof rawBlockById.get !== 'function') return out;
+
+  const displayLineKeys = new Set();
+  for (const ln of displayBlock.lines || []) {
+    const key = lineBoundaryKey(ln);
+    if (key) displayLineKeys.add(key);
+  }
+
+  for (const rawBlockId of displayBlock.rawBlockIds || []) {
+    if (typeof rawBlockId !== 'string' || !rawBlockId) continue;
+    const rawBlock = rawBlockById.get(rawBlockId);
+    const rawLines = Array.isArray(rawBlock?.lines) ? rawBlock.lines : [];
+    const lastLine = rawLines.length > 0 ? rawLines[rawLines.length - 1] : null;
+    const key = lineBoundaryKey(lastLine);
+    if (!key || !displayLineKeys.has(key)) continue;
+
+    out.set(key, rawBlock.confidence === 'probable' ? 'probable' : 'certain');
+  }
+
+  return out;
+}
+
+function serializeLineForRenderer(ln, opts = null) {
+  if (!ln || typeof ln !== 'object') return null;
+  const out = {
     backing: ln.backing || null,
     romOff: typeof ln.romOff === 'number' ? (ln.romOff >>> 0) : null,
     cpuAddr: typeof ln.cpuAddr === 'number' ? (ln.cpuAddr & 0xffff) : null,
@@ -211,17 +250,64 @@ function serializeLineForRenderer(ln) {
     asm: typeof ln.asm === 'string' ? ln.asm : '',
     mnemonic: typeof ln.mnemonic === 'string' ? ln.mnemonic : '',
     mode: typeof ln.mode === 'string' ? ln.mode : null,
+    confidence: ln.confidence === 'probable' ? 'probable' : 'certain',
     flow: serializeFlowForRenderer(ln.flow)
   };
+  const key = lineBoundaryKey(ln);
+  const rawCfgBlockEndKind = key ? opts?.rawCfgBlockEndKinds?.get(key) : null;
+  if (rawCfgBlockEndKind) {
+    out.rawCfgBlockEnd = true;
+    out.rawCfgBlockEndKind = rawCfgBlockEndKind === 'probable' ? 'probable' : 'certain';
+  }
+  return out;
 }
 
-function serializeBlockForRenderer(block) {
+function serializeProbablePromotionDebug(debug) {
+  const entries = Array.isArray(debug?.entries) ? debug.entries : [];
+  const outEntries = [];
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const out = {};
+
+    if (typeof entry.rawBlockId === 'string' && entry.rawBlockId) out.rawBlockId = entry.rawBlockId;
+    if (typeof entry.romStart === 'number') out.romStart = entry.romStart >>> 0;
+    if (typeof entry.romEnd === 'number') out.romEnd = entry.romEnd >>> 0;
+    if (typeof entry.cpuStart === 'number') out.cpuStart = entry.cpuStart & 0xffff;
+    if (typeof entry.acceptedReason === 'string' && entry.acceptedReason) out.acceptedReason = entry.acceptedReason;
+    if (typeof entry.acceptedReasonLabel === 'string' && entry.acceptedReasonLabel) out.acceptedReasonLabel = entry.acceptedReasonLabel;
+    if (Array.isArray(entry.evidenceKinds) && entry.evidenceKinds.length) {
+      out.evidenceKinds = entry.evidenceKinds.filter((value) => typeof value === 'string' && value);
+    }
+    if (Array.isArray(entry.evidenceLabels) && entry.evidenceLabels.length) {
+      out.evidenceLabels = entry.evidenceLabels.filter((value) => typeof value === 'string' && value);
+    }
+
+    if (Object.keys(out).length > 0) outEntries.push(out);
+  }
+
+  return outEntries.length > 0 ? { entries: outEntries } : null;
+}
+
+function serializeBlockForRenderer(block, opts = null) {
   if (!block || typeof block !== 'object') return null;
-  const { siteKey: _siteKey, ctxKey: _ctxKey, lines: _lines, ...rest } = block;
-  return {
+  const {
+    siteKey: _siteKey,
+    ctxKey: _ctxKey,
+    lines: _lines,
+    probablePromotionDebug: _probablePromotionDebug,
+    ...rest
+  } = block;
+  const rawCfgBlockEndKinds = rawCfgBlockEndKindsForDisplayBlock(block, opts?.rawBlockById);
+  const out = {
     ...rest,
-    lines: Array.isArray(block.lines) ? block.lines.map(serializeLineForRenderer).filter(Boolean) : []
+    lines: Array.isArray(block.lines)
+      ? block.lines.map((line) => serializeLineForRenderer(line, { rawCfgBlockEndKinds })).filter(Boolean)
+      : []
   };
+  const probablePromotionDebug = serializeProbablePromotionDebug(block.probablePromotionDebug);
+  if (probablePromotionDebug) out.probablePromotionDebug = probablePromotionDebug;
+  return out;
 }
 
 function stripNavigationIdentityFields(value) {
@@ -593,8 +679,11 @@ export function registerAnalysisIpc() {
     // We count only *explicit* control-flow references (branch/jump/call targets), not fallthroughs. 🤖
     // We also ignore self-loops (e.g., branch-to-self) to avoid reporting intra-block loops. 🤖
     const inboundByBlockId = buildInboundRefsByBlockId(s.displayAnalysis);
+    const rawBlockById = buildRawBlockById(s.rawAnalysis);
 
-    const blocksIndex = s.displayAnalysis.blocks.map((b) => ({
+    const blocksIndex = s.displayAnalysis.blocks.map((b) => {
+      const rawCfgBlockEndKinds = rawCfgBlockEndKindsForDisplayBlock(b, rawBlockById);
+      return {
       id: b.id,
       romStart: b.romStart,
       romEnd: b.romEnd,
@@ -606,10 +695,12 @@ export function registerAnalysisIpc() {
         count: (inboundByBlockId.get(b.id) || []).length,
         sources: inboundByBlockId.get(b.id) || []
       },
+      probablePromotionDebug: serializeProbablePromotionDebug(b.probablePromotionDebug),
       firstAsm: b.lines?.[0]?.asm || '',
       lineCount: b.lines?.length || 0,
-      previewLines: (b.lines || []).slice(0, 8).map(serializeLineForRenderer).filter(Boolean)
-    }));
+      previewLines: (b.lines || []).slice(0, 8).map((line) => serializeLineForRenderer(line, { rawCfgBlockEndKinds })).filter(Boolean)
+      };
+    });
     return {
       ok: true,
       timeline: s.displayAnalysis.timeline,
@@ -675,7 +766,7 @@ export function registerAnalysisIpc() {
     if (!s?.displayAnalysis) return { ok: false, error: 'No analysis loaded' };
     const b = s.blockById?.get(blockId) || s.displayAnalysis.blocks.find((x) => x.id === blockId);
     if (!b) return { ok: false, error: 'Display block not found' };
-    return { ok: true, block: serializeBlockForRenderer(b) };
+    return { ok: true, block: serializeBlockForRenderer(b, { rawBlockById: buildRawBlockById(s.rawAnalysis) }) };
   });
 
   ipcMain.handle('nesviz:getBlockVsaDebug', async (_evt, { blockId }) => {
@@ -703,7 +794,8 @@ export function registerAnalysisIpc() {
       else missing.push(id);
     }
 
-    return { ok: true, blocks: blocks.map(serializeBlockForRenderer).filter(Boolean), missing };
+    const rawBlockById = buildRawBlockById(s.rawAnalysis);
+    return { ok: true, blocks: blocks.map((block) => serializeBlockForRenderer(block, { rawBlockById })).filter(Boolean), missing };
   });
 
   ipcMain.handle('nesviz:getArtifacts', async () => {

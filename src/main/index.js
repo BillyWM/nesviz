@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { registerAnalysisIpc, getActiveAnalysisState } from './analysisIpc.js';
 import { registerTraceStreamerIpc } from './traceStreamer/traceStreamerIpc.js';
-import { installAppMenu } from './menu.js';
+import { installAppMenu, registerMenuSettingsIpc } from './menu.js';
 import { ensureUserDataLoaded, getRecentRomPaths } from './userDataStore.js';
 import { registerRomListIpc, setMainWindow as setMainWindowForRomList } from './romListWindow.js';
 import { registerPreferencesIpc, setMainWindow as setMainWindowForPreferences } from './preferencesWindow.js';
@@ -20,7 +20,7 @@ import { registerRomFolderIpc } from './romFolder/romFolderIpc.js';
 import { setMainWindow as setMainWindowForTuning } from './tuningWindow.js';
 import { setMainWindow as setMainWindowForMarkov } from './markov/markovWindow.js';
 import { setMainWindow as setMainWindowForMarkovMap } from './markov/markovMapWindow.js';
-import { setMainWindow as setMainWindowForMemoryMap } from './memoryMapWindow.js';
+import { registerMemoryMapWindowIpc, setMainWindow as setMainWindowForMemoryMap } from './memoryMapWindow.js';
 import { setMainWindow as setMainWindowForHeatmap } from './heatmapWindow.js';
 import { setMainWindow as setMainWindowForGraph } from './graphWindow.js';
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowState } from './windowState.js';
@@ -73,6 +73,7 @@ app.whenReady().then(async () => {
   registerRomListIpc();
   registerPreferencesIpc();
   registerLabelsIpc();
+  registerMemoryMapWindowIpc();
   registerAnalysisLogIpc();
   registerTuningIpc();
   registerMarkovIpc({ getActiveState: getActiveAnalysisState });
@@ -80,6 +81,7 @@ app.whenReady().then(async () => {
   registerHeatmapIpc({ getActiveState: getActiveAnalysisState });
   registerMemoryMapIpc({ getActiveState: getActiveAnalysisState });
   registerRomFolderIpc();
+  registerMenuSettingsIpc();
   await createWindow();
   setMainWindowForRomList(win);
   setMainWindowForPreferences(win);

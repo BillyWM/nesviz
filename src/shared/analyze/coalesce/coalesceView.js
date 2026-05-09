@@ -1,12 +1,14 @@
 import { siteKeyFor } from '../fetchContext.js';
 import { DEFAULT_COALESCE_CONFIG } from './config.js';
 
-function confRank(c) {
-  return c === 'certain' ? 2 : c === 'probable' ? 1 : 0;
+function normalizeCodeConfidence(confidence) {
+  return confidence === 'probable' ? 'probable' : 'certain';
 }
 
-function bestOf(a, b) {
-  return confRank(a) >= confRank(b) ? a : b;
+function summarizeCodeConfidence(hasCertain, hasProbable) {
+  if (hasCertain && hasProbable) return 'mixed';
+  if (hasProbable) return 'probable';
+  return 'certain';
 }
 
 function isContiguous(a, b) {
@@ -52,24 +54,51 @@ function isBareRtsEntity(entity) {
   return typeof ln?.mnemonic === 'string' && ln.mnemonic.toUpperCase() === 'RTS';
 }
 
+function collectProbablePromotionDebugEntries(member, out, seen) {
+  const entries = member?.probablePromotionDebug?.entries;
+  if (!Array.isArray(entries)) return;
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rawBlockId = typeof entry.rawBlockId === 'string' && entry.rawBlockId ? entry.rawBlockId : '';
+    const acceptedReason = typeof entry.acceptedReason === 'string' && entry.acceptedReason ? entry.acceptedReason : '';
+    const romStart = typeof entry.romStart === 'number' ? entry.romStart >>> 0 : '';
+    const key = `${rawBlockId}:${acceptedReason}:${romStart}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+}
+
 function makeMergedEntity(leaderId, members) {
   const memberInstances = new Map();
   const mergedLines = [];
   const rawBlockIds = [];
+  const probablePromotionDebugEntries = [];
+  const probablePromotionDebugSeen = new Set();
 
-  let mergedConf = 'certain';
+  let hasCertain = false;
+  let hasProbable = false;
   let romStart = null;
   let romEnd = null;
 
   for (const member of members) {
     if (!member) continue;
-    mergedConf = bestOf(mergedConf, member.confidence || 'certain');
+    const memberLines = Array.isArray(member.lines) ? member.lines : [];
+    if (memberLines.length === 0) {
+      const memberConfidence = normalizeCodeConfidence(member.confidence);
+      if (memberConfidence === 'probable') hasProbable = true;
+      else hasCertain = true;
+    }
+
     if (typeof member.romStart === 'number') romStart = romStart === null ? member.romStart : Math.min(romStart, member.romStart);
     if (typeof member.romEnd === 'number') romEnd = romEnd === null ? member.romEnd : Math.max(romEnd, member.romEnd);
 
     for (const rawId of member.rawBlockIds || []) {
       rawBlockIds.push(rawId);
     }
+
+    collectProbablePromotionDebugEntries(member, probablePromotionDebugEntries, probablePromotionDebugSeen);
 
     for (const inst of member.instances || []) {
       const ctxId = inst?.ctxId || 'nrom';
@@ -79,8 +108,11 @@ function makeMergedEntity(leaderId, members) {
       if (!memberInstances.has(key)) memberInstances.set(key, { ctxId, cpuStart: cpuStart & 0xffff });
     }
 
-    for (const ln of member.lines || []) {
-      mergedLines.push({ ...ln });
+    for (const ln of memberLines) {
+      const lineConfidence = normalizeCodeConfidence(ln?.confidence || member.confidence);
+      if (lineConfidence === 'probable') hasProbable = true;
+      else hasCertain = true;
+      mergedLines.push({ ...ln, confidence: lineConfidence });
     }
   }
 
@@ -90,17 +122,23 @@ function makeMergedEntity(leaderId, members) {
     ? ((lastLine.cpuAddr + lastLine.len) & 0xffff)
     : null;
 
-  return {
+  const out = {
     id: leaderId,
     romStart,
     romEnd,
-    confidence: mergedConf,
+    confidence: summarizeCodeConfidence(hasCertain, hasProbable),
     instances: Array.from(memberInstances.values()),
     rawBlockIds,
     cpuStart: typeof cpuStart === 'number' ? (cpuStart & 0xffff) : null,
     cpuEnd,
     lines: mergedLines
   };
+
+  if (probablePromotionDebugEntries.length > 0) {
+    out.probablePromotionDebug = { entries: probablePromotionDebugEntries };
+  }
+
+  return out;
 }
 
 function countInstrFromEntityIndexToStartSiteKey(entities, startIndex, targetSiteKey, maxInstr) {

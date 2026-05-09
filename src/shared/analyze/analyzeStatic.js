@@ -4,7 +4,6 @@ import { createFixedSwitch32kMapper } from './map/fixedSwitch32k.js';
 import { createMmc1Mapper } from './map/mmc1.js';
 import { createMmc3Mapper } from './map/mmc3.js';
 import { buildVectorSeedItemsByFamily } from './vectorNavigation.js';
-import { cpuToRomOffWithMapper } from './map/cpuToRomOff.js';
 import { discoverCfg } from './discover/cfg.js';
 import { buildTimeline } from './discover/timeline.js';
 import { buildBlockContextIndex } from './discover/blockContextIndex.js';
@@ -14,16 +13,20 @@ import { buildVsaDataflow } from './vsa/dataflow.js';
 import { buildMemoryDiscoveries } from './vsa/memoryDiscoveries.js';
 import { recognizeJumpTables } from './recognize/jumpTables.js';
 import { inferSpeculativeDispatchTargets } from './recognize/speculativeDispatch.js';
-import { DEFAULT_PROBABLE_CONFIG_NROM, DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K, DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH32K, buildProbableConfigFixedSwitch16K, buildProbableConfigFixedSwitch32K } from './probable/config.js';
+import { DEFAULT_PROBABLE_CONFIG_NROM, buildProbableConfigFixedSwitch16K, buildProbableConfigFixedSwitch32K } from './probable/config.js';
 import { scanProbableCode } from './probable/scanUnknown.js';
 import { buildProbableInterruptRootSet } from './probable/rtiVectorHeuristic.js';
 import { deriveProbableSeedItems } from './probable/deriveSeeds.js';
 import { decodePrgCdlByte, isPrgDataObserved, NES_CDL_FORMAT_MESEN2 } from './cdl/nesCdl.js';
 import { buildPrgOccupancy } from './occupancy/prgOccupancy.js';
+import { buildDataDiscoveries } from './dataDiscoveries/buildDataDiscoveries.js';
 import { resolveBlockConflicts } from './postprocess/resolveBlockConflicts.js';
 import { detectMonotoneTables } from './data/detectMonotoneTables.js';
 import { attachMonotoneTableReaders } from './data/attachMonotoneTableReaders.js';
+import { attachMonotoneReaderEvidenceRaw } from './data/attachMonotoneReaderEvidenceRaw.js';
 import { deriveGoalDrivenProbeOffsets } from './data/goalDrivenProbableSearch.js';
+import { promoteVsaCandidates } from './probable/promoteVsaCandidates.js';
+import { filterVsaFactsByRawBlockIds } from './vsa/filterFacts.js';
 
 
 async function collectVsaData({
@@ -32,6 +35,7 @@ async function collectVsaData({
   blocks,
   edges,
   entryBlockIds,
+  unresolvedSites = [],
   vectorSeedItemsByFamily = null,
   vectorCpuAddrsByFamily = null,
   yieldEveryMs = 0,
@@ -54,6 +58,7 @@ async function collectVsaData({
     blocks,
     edges,
     entryBlockIds,
+    unresolvedSites,
     blockContextIndex,
     yieldEveryMs,
     onProgress: onVsaProgress,
@@ -80,6 +85,42 @@ function seedSiteKey(mapper, seed) {
   return `${ctxKey}:${cpu.toString(16).toUpperCase().padStart(4, '0')}`;
 }
 
+function normalizeLeaderReasons(seed) {
+  const out = [];
+  if (Array.isArray(seed?.leaderReasons)) {
+    for (const reason of seed.leaderReasons) {
+      if (reason && typeof reason === 'object') out.push({ ...reason });
+    }
+  }
+  if (seed?.leaderReason && typeof seed.leaderReason === 'object') out.push({ ...seed.leaderReason });
+  if (!out.length) {
+    out.push(seed?.confidence === 'probable' ? { kind: 'candidate_seed', source: 'unknown' } : { kind: 'seed_entry' });
+  }
+  const seen = new Set();
+  return out.filter((reason) => {
+    const key = JSON.stringify(reason);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeLeaderReasons(...groups) {
+  const out = [];
+  const seen = new Set();
+  for (const group of groups || []) {
+    for (const reason of group || []) {
+      if (!reason || typeof reason !== 'object') continue;
+      const copy = { ...reason };
+      const key = JSON.stringify(copy);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(copy);
+    }
+  }
+  return out;
+}
+
 function mergeSeedItems(mapper, seedGroups) {
   const byKey = new Map();
   for (const group of seedGroups || []) {
@@ -88,11 +129,23 @@ function mergeSeedItems(mapper, seedGroups) {
       const normalized = {
         cpuAddr: seed.cpuAddr & 0xffff,
         fetchCtx: seed.fetchCtx || mapper.initialFetchCtx(),
-        confidence: seed.confidence === 'certain' ? 'certain' : 'probable'
+        confidence: seed.confidence === 'certain' ? 'certain' : 'probable',
+        leaderKind: seed.leaderKind || (seed.confidence === 'probable' ? 'soft' : 'hard'),
+        leaderReasons: normalizeLeaderReasons(seed)
       };
       const key = seedItemKey(mapper, normalized);
       const prev = byKey.get(key);
-      if (!prev || normalized.confidence === 'certain') byKey.set(key, normalized);
+      if (!prev) {
+        byKey.set(key, normalized);
+        continue;
+      }
+      const confidence = (prev.confidence === 'certain' || normalized.confidence === 'certain') ? 'certain' : 'probable';
+      byKey.set(key, {
+        ...prev,
+        confidence,
+        leaderKind: confidence === 'certain' ? 'hard' : (prev.leaderKind === 'hard' || normalized.leaderKind === 'hard' ? 'hard' : 'soft'),
+        leaderReasons: mergeLeaderReasons(prev.leaderReasons, normalized.leaderReasons)
+      });
     }
   }
   return Array.from(byKey.values());
@@ -193,11 +246,6 @@ async function runDispatchFixpoint({
   };
 }
 
-function buildBaseEntrypointSeeds({ vectors, mapper }) {
-  const fetchCtx = mapper.initialFetchCtx();
-  return collectEntrypoints(vectors).map((cpuAddr) => ({ cpuAddr, confidence: 'certain', fetchCtx }));
-}
-
 function buildVectorSeedDebug(mapper, seedItems) {
   return {
     vectorSeedCount: seedItems.length,
@@ -216,6 +264,22 @@ function buildCodeOnlyBitmap(prgSize, blocks) {
     }
   }
   return bitmap;
+}
+
+
+function countInstructions(blocks) {
+  return (blocks || []).reduce((sum, block) => sum + (Array.isArray(block?.lines) ? block.lines.length : 0), 0);
+}
+
+function keptRawBlockIdsFor(blocks) {
+  const ids = new Set();
+  for (const block of blocks || []) {
+    if (typeof block?.id === 'string') ids.add(block.id);
+    for (const rawId of block?.rawBlockIds || []) {
+      if (typeof rawId === 'string') ids.add(rawId);
+    }
+  }
+  return ids;
 }
 
 function detectAndAttachMonotoneTables({ prgBytes, mapper, blocks, probableCfg }) {
@@ -272,7 +336,7 @@ async function runStaticAnalysisPipeline({
   const probableKeptAll = probableScan.kept || [];
   const probableKept = probableKeptAll.slice(0, Math.max(0, probableCfg.maxPromotedChunks | 0));
   const probableSeeds = (probableCfg.enabled && probableCfg.promoteToCfg)
-    ? deriveProbableSeedItems({ keptChunks: probableKept, mapper, maxChunks: probableCfg.maxPromotedChunks })
+    ? deriveProbableSeedItems({ keptChunks: probableKept, mapper, maxChunks: probableCfg.maxPromotedChunks, source: 'globalScan' })
     : [];
 
   const phase2Base = [...initialSeedItems, ...phase1.exactSeedItems, ...phase1.speculativeSeedItems, ...probableSeeds];
@@ -321,7 +385,7 @@ async function runStaticAnalysisPipeline({
     });
     const goalDrivenKept = (goalDrivenScan.kept || []).slice(0, Math.max(0, probableCfg.goalDrivenMaxPromotedChunks | 0));
     goalDrivenSeeds = probableCfg.promoteToCfg
-      ? deriveProbableSeedItems({ keptChunks: goalDrivenKept, mapper, maxChunks: probableCfg.goalDrivenMaxPromotedChunks })
+      ? deriveProbableSeedItems({ keptChunks: goalDrivenKept, mapper, maxChunks: probableCfg.goalDrivenMaxPromotedChunks, source: 'goalDrivenMonotone' })
       : [];
 
     if (goalDrivenSeeds.length) {
@@ -348,6 +412,7 @@ async function runStaticAnalysisPipeline({
     blocks: activeCfg.blocks,
     edges: rawEdges,
     entryBlockIds,
+    unresolvedSites: activeCfg.unresolvedSites,
     vectorSeedItemsByFamily,
     vectorCpuAddrsByFamily: collectVectorCpuAddrsByFamily(vectors),
     yieldEveryMs,
@@ -365,39 +430,74 @@ async function runStaticAnalysisPipeline({
     vsaFacts
   });
 
+  const promoted = promoteVsaCandidates({
+    blocks: resolved.blocks,
+    edges: resolved.edges,
+    unresolvedSites: resolved.unresolvedSites,
+    artifacts: resolved.artifacts,
+    vsaFacts: resolved.vsaFacts,
+    memoryDiscoveries: resolved.memoryDiscoveries
+  });
+
+  const promotedBlockContextIndex = buildBlockContextIndex({
+    blocks: promoted.blocks,
+    edges: promoted.edges,
+    vectorSeedItemsByFamily,
+    vectorCpuAddrsByFamily: collectVectorCpuAddrsByFamily(vectors)
+  });
+  const filteredVsaFacts = filterVsaFactsByRawBlockIds({
+    observationsResult: resolved.vsaFacts,
+    keepRawBlockIds: keptRawBlockIdsFor(promoted.blocks)
+  });
+  const filteredVsaDataflow = filteredVsaFacts ? buildVsaDataflow({ observationsResult: filteredVsaFacts }) : null;
+  const filteredMemoryDiscoveries = (filteredVsaFacts && filteredVsaDataflow)
+    ? buildMemoryDiscoveries({ observationsResult: filteredVsaFacts, vsaDataflow: filteredVsaDataflow, blockContextIndex: promotedBlockContextIndex, prgBytes, blocks: promoted.blocks, edges: promoted.edges })
+    : null;
+
   const finalMonotone = detectAndAttachMonotoneTables({
     prgBytes,
     mapper,
-    blocks: resolved.blocks,
+    blocks: promoted.blocks,
     probableCfg
   });
+  const finalMonotoneTables = attachMonotoneReaderEvidenceRaw({
+    blocks: promoted.blocks,
+    monotoneTables: finalMonotone.tables,
+    observationsResult: filteredVsaFacts
+  });
 
-  const finalBitmap = computeFinalBitmap(activeCfg.codeBitmap);
+  const finalBitmap = computeFinalBitmap(buildCodeOnlyBitmap(prgBytes.length, promoted.blocks));
+  const dataDiscoveries = buildDataDiscoveries({
+    memoryDiscoveries: filteredMemoryDiscoveries,
+    monotoneTables: finalMonotoneTables,
+    prgSize: prgBytes.length
+  });
   const prgOccupancy = computePrgOccupancy({
     prgSize: prgBytes.length,
-    blocks: resolved.blocks,
-    memoryDiscoveries: resolved.memoryDiscoveries,
+    blocks: promoted.blocks,
+    dataDiscoveries,
     cdlPrg: cdlResult?.prg || null,
     cdlFormat: cdlResult?.meta?.format || NES_CDL_FORMAT_MESEN2
   });
-  const timeline = buildTimeline({ prgSize: prgBytes.length, blocks: resolved.blocks, occupancy: prgOccupancy, bitmap: finalBitmap });
-  const probableBlockCount = resolved.blocks.filter((b) => b.confidence === 'probable').length;
+  const timeline = buildTimeline({ prgSize: prgBytes.length, blocks: promoted.blocks, occupancy: prgOccupancy, bitmap: finalBitmap });
+  const probableBlockCount = promoted.blocks.filter((b) => b.confidence === 'probable').length;
   const occupancyStats = prgOccupancy.stats;
   const determinedByteCount = occupancyStats.totalBytes;
   const coveragePct = occupancyStats.totalPct;
 
   return {
     mapper: { kind: mapperKind, prgSize: prgBytes.length, meta: mapperMeta || null },
-    blocks: resolved.blocks,
-    edges: resolved.edges,
+    blocks: promoted.blocks,
+    edges: promoted.edges,
     timeline,
-    artifacts: resolved.artifacts,
-    monotoneTables: finalMonotone.tables,
+    artifacts: promoted.artifacts,
+    monotoneTables: finalMonotoneTables,
     semanticFacts: [],
-    vsaFacts: resolved.vsaFacts,
-    vsaDataflow: resolved.vsaDataflow,
-    memoryDiscoveries: resolved.memoryDiscoveries,
-    unresolvedSites: resolved.unresolvedSites,
+    vsaFacts: filteredVsaFacts,
+    vsaDataflow: filteredVsaDataflow,
+    memoryDiscoveries: filteredMemoryDiscoveries,
+    dataDiscoveries,
+    unresolvedSites: promoted.unresolvedSites,
     rawBlockIdAliases: resolved.rawBlockIdAliases,
     probable: {
       keptChunkCount: probableKeptAll.length,
@@ -414,7 +514,8 @@ async function runStaticAnalysisPipeline({
         rawHitCount: goalDrivenSearch.stats?.rawHitCount || 0,
         unresolvedTableCount: goalDrivenSearch.stats?.unresolvedTableCount || 0,
         regionSummaries: summarizeProbableRegions(goalDrivenScan.regionStats || [], mapper, prgBytes.length)
-      }
+      },
+      candidatePromotion: promoted.debug
     },
     cdl: cdlResult,
     prgOccupancy,
@@ -423,20 +524,25 @@ async function runStaticAnalysisPipeline({
       decodeFailuresByPc: activeCfg.decodeFailuresByPc || [],
       monotoneTables: {
         preGoalCount: preGoalMonotone.tables.length,
-        finalCount: finalMonotone.tables.length,
-        unresolvedFinalCount: finalMonotone.tables.filter((table) => !table.promotedToPointerTable).length
+        finalCount: finalMonotoneTables.length,
+        unresolvedFinalCount: finalMonotoneTables.filter((table) => !table.promotedToPointerTable).length
       },
       rawConflictResolution: resolved.debug,
+      probableCandidatePromotion: promoted.debug,
       ...(debugExtras || {})
     },
     stats: {
-      instructionCount: activeCfg.instructionCount,
+      instructionCount: countInstructions(promoted.blocks),
       rawBlockCount: activeCfg.blocks.length,
-      blockCount: resolved.blocks.length,
+      blockCount: promoted.blocks.length,
       probableBlockCount,
       determinedByteCount,
       coveragePct,
       codeByteCount: occupancyStats.codeBytes,
+      confirmedCodeByteCount: occupancyStats.confirmedCodeBytes,
+      probableCodeByteCount: occupancyStats.probableCodeBytes,
+      confirmedCodePctOfCode: occupancyStats.confirmedCodePctOfCode,
+      probableCodePctOfCode: occupancyStats.probableCodePctOfCode,
       dataByteCount: occupancyStats.dataBytes,
       unknownByteCount: occupancyStats.unknownBytes,
       totalByteCount: occupancyStats.totalBytes,
@@ -448,11 +554,11 @@ async function runStaticAnalysisPipeline({
   };
 }
 
-function computePrgOccupancy({ prgSize, blocks, memoryDiscoveries, cdlPrg = null, cdlFormat = NES_CDL_FORMAT_MESEN2 }) {
+function computePrgOccupancy({ prgSize, blocks, dataDiscoveries, cdlPrg = null, cdlFormat = NES_CDL_FORMAT_MESEN2 }) {
   return buildPrgOccupancy({
     prgSize,
     blocks,
-    memoryDiscoveries,
+    dataDiscoveries,
     cdlPrg,
     cdlFormat
   });
@@ -673,13 +779,6 @@ function collectVectorCpuAddrsByFamily(vectors) {
   };
 }
 
-function collectEntrypoints(vectors) {
-  return [vectors?.reset, vectors?.nmi, vectors?.irqBrk]
-    .filter((x) => typeof x === 'number')
-    .map((x) => x & 0xffff)
-    .filter((x) => x >= 0x8000);
-}
-
 function emptyResult() {
   return {
     blocks: [],
@@ -689,6 +788,7 @@ function emptyResult() {
     vsaFacts: null,
     vsaDataflow: null,
     memoryDiscoveries: null,
+    dataDiscoveries: null,
     unresolvedSites: [],
     prgOccupancy: null,
     stats: {
@@ -707,13 +807,6 @@ function emptyResult() {
       totalPct: 0
     }
   };
-}
-
-function countNonZero(u8) {
-  if (!u8 || u8.length === 0) return 0;
-  let n = 0;
-  for (let i = 0; i < u8.length; i++) if (u8[i] !== 0) n++;
-  return n;
 }
 
 function overlayDataEvidence(codeBitmap01, dataObserved01) {

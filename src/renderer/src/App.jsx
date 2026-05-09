@@ -70,6 +70,7 @@ export default function App() {
   const [gapBytesByKey, setGapBytesByKey] = useState({});
   const [gapBytesLoadingByKey, setGapBytesLoadingByKey] = useState({});
   const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [showNamedConstants, setShowNamedConstants] = useState(true);
   const [analysisDebug, setAnalysisDebug] = useState(null);
   const [vsaDebugModal, setVsaDebugModal] = useState(null);
 
@@ -116,10 +117,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!window?.nesviz?.onMenuSetShowDebugInfo) return undefined;
     return window.nesviz.onMenuSetShowDebugInfo((checked) => {
       setShowDebugInfo(!!checked);
     });
+  }, []);
+
+  useEffect(() => {
+    let canceled = false;
+    (async () => {
+      try {
+        const settings = await window.nesviz.getViewSettings();
+        if (!canceled) setShowNamedConstants(settings?.showNamedConstants !== false);
+      } catch {
+        if (!canceled) setShowNamedConstants(true);
+      }
+    })();
+    const off = window.nesviz.onMenuSetShowNamedConstants((checked) => {
+      setShowNamedConstants(checked !== false);
+    });
+    return () => {
+      canceled = true;
+      if (typeof off === 'function') off();
+    };
   }, []);
 
   useEffect(() => {
@@ -194,7 +213,6 @@ export default function App() {
 
   const setBookmarkAtRomOff = useCallback(async (romOff, set) => {
     if (!romHash) return;
-    if (!window?.nesviz?.setBookmarkAtRomOff) return;
     const off = normalizeRomOffValue(romOff);
     if (off === null) return;
     const res = await window.nesviz.setBookmarkAtRomOff(off, !!set);
@@ -212,7 +230,6 @@ export default function App() {
 
   const setRomLabelAt = useCallback(async (romOff, label) => {
     if (!romHash) return;
-    if (!window?.nesviz?.setRomLabel) return;
     const off = normalizeRomOffValue(romOff);
     if (off === null) return;
     const res = await window.nesviz.setRomLabel(off, label);
@@ -223,7 +240,6 @@ export default function App() {
 
   const setAddrLabelAt = useCallback(async (cpuAddr, label) => {
     if (!romHash) return;
-    if (!window?.nesviz?.setAddrLabel) return;
     const res = await window.nesviz.setAddrLabel(cpuAddr, label);
     if (res?.ok) {
       setLabelsByAddr(res.addrLabels && typeof res.addrLabels === 'object' ? res.addrLabels : {});
@@ -414,7 +430,7 @@ export default function App() {
       navigateToRomOffWithHistory(entry.romOff);
       return;
     }
-    event?.stopPropagation?.();
+    if (event) event.stopPropagation();
     setOpenVectorMenuFamily((prev) => (prev === family ? null : family));
   }
 
@@ -472,15 +488,23 @@ export default function App() {
     );
   }
 
-  // Navigation requests coming from the Labels secondary window.
+  function handleSecondaryWindowNavigate(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.kind === 'rom') {
+      navigateToRomOffWithHistory(msg.romOff);
+    }
+  }
+
+  // Navigation requests coming from secondary windows.
   useEffect(() => {
-    if (!window?.nesviz?.onLabelsNavigate) return;
-    const unsub = window.nesviz.onLabelsNavigate((msg) => {
-      if (!msg || typeof msg !== 'object') return;
-      if (msg.kind === 'rom') {
-        navigateToRomOffWithHistory(msg.romOff);
-      }
-    });
+    const unsub = window.nesviz.onLabelsNavigate(handleSecondaryWindowNavigate);
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  }, [navigateToRomOffWithHistory]);
+
+  useEffect(() => {
+    const unsub = window.nesviz.onMemoryMapNavigate(handleSecondaryWindowNavigate);
     return () => {
       if (typeof unsub === 'function') unsub();
     };
@@ -555,8 +579,6 @@ export default function App() {
   }, [contextMenu, labelModal, toggleBookmarkAtRomOff]);
 
   useEffect(() => {
-    if (!window?.nesviz?.getStartupRomPath) return;
-
     let canceled = false;
 
     (async () => {
@@ -576,18 +598,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!window?.nesviz?.onMenuOpenRom) return;
     const unsubOpen = window.nesviz.onMenuOpenRom(() => {
       openRom();
     });
-    const unsubOpenRecent = window.nesviz.onMenuOpenRecentRom?.((filepath) => {
+    const unsubOpenRecent = window.nesviz.onMenuOpenRecentRom((filepath) => {
       if (!filepath) return;
       openRomPath(filepath);
     });
-    const unsubOpenCdl = window.nesviz.onMenuOpenCdl?.(() => {
+    const unsubOpenCdl = window.nesviz.onMenuOpenCdl(() => {
       openCdl();
     });
-    const unsubAbout = window.nesviz.onMenuShowAbout?.(() => {
+    const unsubAbout = window.nesviz.onMenuShowAbout(() => {
       setStatus('NesViz: NES reverse engineering tool (static analysis prototype)');
       setTimeout(() => setStatus(''), 2500);
     });
@@ -785,7 +806,6 @@ export default function App() {
   }
 
   async function copyTextToClipboard(text) {
-    if (!window?.nesviz?.copyText) return;
     const payload = typeof text === 'string' ? text : String(text ?? '');
     if (!payload) return;
     const res = await window.nesviz.copyText(payload);
@@ -804,7 +824,7 @@ export default function App() {
 
   async function showVsaForContextMenu(cm) {
     const blockId = cm?.blockId || null;
-    if (!showDebugInfo || !blockId || !window?.nesviz?.getBlockVsaDebug) return;
+    if (!showDebugInfo || !blockId) return;
     setContextMenu(null);
     setVsaDebugModal({ loading: true, error: '', debug: null });
     try {
@@ -928,6 +948,7 @@ export default function App() {
             gapBytesLoadingByKey={gapBytesLoadingByKey}
             analysisDebug={analysisDebug}
             showDebugInfo={showDebugInfo}
+            showNamedConstants={showNamedConstants}
             apiRef={stackApiRef}
           />
         </section>

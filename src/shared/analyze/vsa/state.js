@@ -1,6 +1,8 @@
 import { vUnknown, vJoin } from './value.js';
 import { pUnknown, pJoin } from './prov.js';
 import { bUnknown8, bJoin } from './bits.js';
+import { makeUnknownFlags, cloneFlags, joinFlags, flagEquals } from './flags.js';
+import { makePpuState, clonePpuState, joinPpuState, ppuStatesEqual } from './ppuState.js';
 
 // A tracked value is (abstract value set) + (provenance expression). 🤖
 // The abstract value drives the analysis; provenance is attached for explainability and pattern matching later. 🤖
@@ -16,10 +18,10 @@ export function makeState(trackedZpAddrs, opts = null) {
     A: makeTracked(),
     X: makeTracked(),
     Y: makeTracked(),
-    // Carry flag (0/1) when known; null when unknown. Used for a few constant-preserving idioms (CLC; ADC #imm). 🤖
-    C: null,
+    flags: makeUnknownFlags(),
     zp,
     ram: opts?.trackRam ? new Map() : null,
+    ppu: makePpuState(),
     lastCmp: null, // { reg: 'A'|'X'|'Y', imm: byte } 🤖
     lastNZ: null // { reg: 'A'|'X'|'Y' } for load/ALU -> branch adjacency filtering. 🤖
   };
@@ -30,9 +32,10 @@ export function cloneState(s) {
     A: { ...s.A },
     X: { ...s.X },
     Y: { ...s.Y },
-    C: (s.C === 0 || s.C === 1) ? s.C : null,
+    flags: cloneFlags(s.flags),
     zp: new Map(Array.from(s.zp.entries()).map(([k, v]) => [k, { ...v }])) ,
     ram: s.ram ? new Map(Array.from(s.ram.entries()).map(([k, v]) => [k, { ...v }])) : null,
+    ppu: clonePpuState(s.ppu),
     lastCmp: s.lastCmp ? { ...s.lastCmp } : null,
     lastNZ: s.lastNZ ? { ...s.lastNZ } : null
   };
@@ -77,14 +80,11 @@ export function joinInto(base, incoming) {
     base[r] = joined;
   }
 
-  // Carry: preserve only when both paths agree. Otherwise it becomes unknown. 🤖
-  const bc = (base.C === 0 || base.C === 1) ? base.C : null;
-  const ic = (incoming.C === 0 || incoming.C === 1) ? incoming.C : null;
-  const jc = (bc != null && ic != null && bc === ic) ? bc : null;
-  if (base.C !== jc) {
-    base.C = jc;
-    // carry changes don't count as abstract-value changes for the worklist; it's an auxiliary precision knob.
+  const joinedFlags = joinFlags(base.flags, incoming.flags);
+  for (const flag of ['N', 'V', 'Z', 'C']) {
+    if (!flagEquals(base.flags?.[flag], joinedFlags[flag])) changed = true;
   }
+  base.flags = joinedFlags;
 
   for (const [k, v] of base.zp.entries()) {
     const inc = incoming.zp.get(k) || makeTracked();
@@ -107,6 +107,10 @@ export function joinInto(base, incoming) {
       base.ram.set(k, joined);
     }
   }
+
+  const joinedPpu = joinPpuState(base.ppu, incoming.ppu);
+  if (!ppuStatesEqual(base.ppu, joinedPpu)) changed = true;
+  base.ppu = joinedPpu;
 
   // Branch-adjacency facts are only meaningful within a single straight-line path; drop them on joins. 🤖
   base.lastCmp = null;

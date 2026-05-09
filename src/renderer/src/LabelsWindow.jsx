@@ -12,7 +12,7 @@ export default function LabelsWindow() {
   const reload = useCallback(async () => {
     setStatus('Loading labels…');
     try {
-      const res = await window.nesviz?.getActiveLabels?.();
+      const res = await window.nesviz.getActiveLabels();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load labels');
         return;
@@ -59,7 +59,7 @@ export default function LabelsWindow() {
   const total = addrItems.length + romItems.length;
 
   function navigateTo(it) {
-    if (!it || !window?.nesviz?.labelsNavigate) return;
+    if (!it) return;
     if (it.kind === 'rom') {
       window.nesviz.labelsNavigate({ kind: 'rom', romOff: it.romOff });
     }

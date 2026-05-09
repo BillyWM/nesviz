@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
 import { loadRendererWindow } from './utils/windowLoaderUtils.js';
+import { showAndFocusWindow } from './utils/windowFocusUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,8 +58,7 @@ export function registerLabelsIpc() {
     if (!payload || typeof payload !== 'object') return;
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
-      mainWindow.show();
-      mainWindow.focus();
+      showAndFocusWindow(mainWindow);
       mainWindow.webContents.send('nesviz:labelsNavigate', payload);
     } catch {
       // Ignore.

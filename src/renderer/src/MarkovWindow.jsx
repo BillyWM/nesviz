@@ -26,7 +26,7 @@ export default function MarkovWindow() {
     setStatus('Training…');
     setResult(null);
     try {
-      const res = await window.nesviz?.markovTrainOpcodeModel?.({ source });
+      const res = await window.nesviz.markovTrainOpcodeModel({ source });
       if (!res?.ok) {
         setStatus(res?.error || 'Training failed');
         return;

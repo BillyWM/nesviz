@@ -115,7 +115,7 @@ export default function RomListWindow() {
       cached: true
     });
     if (activeScanTokenRef.current) {
-      window.nesviz?.cancelRomFolderScan?.(activeScanTokenRef.current);
+      window.nesviz.cancelRomFolderScan(activeScanTokenRef.current);
       activeScanTokenRef.current = null;
     }
     return true;
@@ -126,7 +126,7 @@ export default function RomListWindow() {
     let canceled = false;
     (async () => {
       try {
-        const cache = await window.nesviz?.getRomFolderCache?.();
+        const cache = await window.nesviz.getRomFolderCache();
         if (canceled) return;
         if (!applyCache(cache)) {
           setFolderPaths([]);
@@ -146,7 +146,7 @@ export default function RomListWindow() {
     let canceled = false;
     (async () => {
       try {
-        const savedUiState = await window.nesviz?.getRomListUiState?.();
+        const savedUiState = await window.nesviz.getRomListUiState();
         if (canceled) return;
 
         if (savedUiState?.filterState && typeof savedUiState.filterState === 'object') {
@@ -177,7 +177,7 @@ export default function RomListWindow() {
 
   useEffect(() => {
     if (!romListUiStateReadyRef.current) return;
-    void window.nesviz?.setRomListUiState?.({
+    void window.nesviz.setRomListUiState({
       filterState,
       sort
     });
@@ -189,7 +189,7 @@ export default function RomListWindow() {
     if (!nextFolderPaths.length) return;
 
     if (activeScanTokenRef.current) {
-      window.nesviz?.cancelRomFolderScan?.(activeScanTokenRef.current);
+      window.nesviz.cancelRomFolderScan(activeScanTokenRef.current);
       activeScanTokenRef.current = null;
     }
 
@@ -199,7 +199,7 @@ export default function RomListWindow() {
 
     try {
       let token = null;
-      const scan = window.nesviz?.startRomFolderScan?.(nextFolderPaths, opts || null, (msg) => {
+      const scan = window.nesviz.startRomFolderScan(nextFolderPaths, opts || null, (msg) => {
         if (!msg || token !== activeScanTokenRef.current) return;
 
         if (msg.type === 'start') {
@@ -273,7 +273,7 @@ export default function RomListWindow() {
   const selectFolderAndScan = useCallback(async () => {
     setStatus('Selecting ROM folders…');
     try {
-      const sel = await window.nesviz?.selectRomFolder?.();
+      const sel = await window.nesviz.selectRomFolder();
       if (!sel?.ok) {
         setStatus(sel?.canceled ? '' : (sel?.error || 'Select canceled'));
         return;
@@ -291,13 +291,12 @@ export default function RomListWindow() {
 
   useEffect(() => () => {
     if (!activeScanTokenRef.current) return;
-    window.nesviz?.cancelRomFolderScan?.(activeScanTokenRef.current);
+    window.nesviz.cancelRomFolderScan(activeScanTokenRef.current);
     activeScanTokenRef.current = null;
   }, []);
 
   // Commands from main (e.g. "Open ROM Folder..." should prompt the folder picker).
   useEffect(() => {
-    if (!window?.nesviz?.onRomListCommand) return;
     const unsub = window.nesviz.onRomListCommand((cmd) => {
       if (!cmd || typeof cmd !== 'object') return;
       if (cmd.type === 'selectFolderAndScan') {
@@ -312,7 +311,7 @@ export default function RomListWindow() {
   function openRom(filePath) {
     if (!filePath) return;
     // Tell main to open this ROM in the main window. Main will close this window.
-    window.nesviz?.romListOpenRom?.(filePath);
+    window.nesviz.romListOpenRom(filePath);
   }
 
   const done = !!scanMeta?.done;

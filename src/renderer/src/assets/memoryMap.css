@@ -161,3 +161,113 @@
   color: var(--memory-map-text);
   padding: 16px;
 }
+
+.memory-map-annotation-span {
+  position: absolute;
+  left: var(--memory-map-span-left, 0px);
+  top: 0;
+  width: var(--memory-map-span-width, 0px);
+  height: 16px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0) 4px,
+    rgba(255, 255, 255, 0.42) 4px,
+    rgba(255, 255, 255, 0.42) 6px
+  );
+  z-index: 1;
+}
+
+.memory-map-annotation-span:hover {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.08) 0,
+    rgba(255, 255, 255, 0.08) 4px,
+    rgba(255, 255, 255, 0.62) 4px,
+    rgba(255, 255, 255, 0.62) 6px
+  );
+}
+
+.memory-map-annotation-popup {
+  position: fixed;
+  z-index: 10;
+  min-width: 190px;
+  max-width: 360px;
+  padding: 8px 10px;
+  border: 1px solid var(--memory-map-border);
+  border-radius: 6px;
+  background: rgba(11, 15, 21, 0.98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  color: var(--memory-map-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.memory-map-annotation-title {
+  color: var(--memory-map-text-strong);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.memory-map-annotation-functions {
+  margin-top: 4px;
+  color: var(--memory-map-text-muted);
+}
+
+.memory-map-annotation-functions-label {
+  color: var(--memory-map-text);
+}
+
+.memory-map-annotation-function {
+  display: inline-block;
+  border: 0;
+  padding: 0;
+  margin: 0 7px 0 0;
+  background: transparent;
+  color: var(--memory-map-text-strong);
+  font: inherit;
+  cursor: pointer;
+}
+
+.memory-map-annotation-function:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.memory-map-annotation-function:disabled {
+  cursor: default;
+  color: var(--memory-map-text-muted);
+  text-decoration: none;
+}
+
+.memory-map-annotation-divider {
+  border: 0;
+  border-top: 1px solid var(--memory-map-border);
+  margin: 7px 0;
+}
+
+.memory-map-annotation-function-more {
+  display: inline;
+  border: 0;
+  padding: 0;
+  margin: 0 7px 0 0;
+  background: transparent;
+  color: var(--memory-map-text-strong);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.memory-map-annotation-function-more:hover {
+  color: #ffffff;
+}
+
+.memory-map-annotation-function-more--ellipsis {
+  text-decoration: none;
+  font-weight: 700;
+}

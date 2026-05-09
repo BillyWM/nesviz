@@ -43,6 +43,13 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
   const codePctText = Number.isFinite(stats?.codePct)
     ? `${stats.codePct.toFixed(2)}%`
     : '0.00%';
+  const confirmedCodePctOfCodeText = Number.isFinite(stats?.confirmedCodePctOfCode)
+    ? `${stats.confirmedCodePctOfCode.toFixed(2)}%`
+    : '0.00%';
+  const probableCodePctOfCodeText = Number.isFinite(stats?.probableCodePctOfCode)
+    ? `${stats.probableCodePctOfCode.toFixed(2)}%`
+    : '0.00%';
+  const codePctTitle = `Confirmed: ${confirmedCodePctOfCodeText} of discovered code\nProbable: ${probableCodePctOfCodeText} of discovered code`;
   const dataPctText = Number.isFinite(stats?.dataPct)
     ? `${stats.dataPct.toFixed(2)}%`
     : '0.00%';
@@ -105,7 +112,7 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
           <span className="nv-art-k">Instructions</span>
           <span className="nv-art-v">{stats?.instructionCount ?? 0}</span>
         </div>
-        <div className="nv-art-kv">
+        <div className="nv-art-kv" title={codePctTitle}>
           <span className="nv-art-k">Code</span>
           <span className="nv-art-v">{codePctText}</span>
         </div>
@@ -286,18 +293,48 @@ export function ArtifactPanel({ rom, mapper, stats, artifacts, unresolvedSites, 
   );
 }
 
+const POI_KIND_TITLES = {
+  waitsForInterrupt: 'Waits for interrupt',
+  waitsForZpValue: 'Waits for ZP value',
+  waitsForVblank: 'Waits for vblank',
+  waitsForSprite0Hit: 'Waits for sprite 0 hit',
+  setsScroll: 'Sets scroll',
+  writesPpuData: 'writes PPUDATA',
+  oamDma: 'OAM DMA',
+  writesPalettes: 'Writes Palettes',
+  writesAttributes: 'Writes Attributes',
+  dataTables: 'Data table reads',
+  pointerTables: 'Pointer tables',
+  monotoneTables: 'Monotone table reads',
+  alignmentNops: 'Alignment NOPs'
+};
+
+const POI_KIND_ORDER = [
+  'oamDma',
+  'writesPpuData',
+  'writesPalettes',
+  'writesAttributes',
+  'dataTables',
+  'pointerTables',
+  'monotoneTables',
+  'setsScroll',
+  'alignmentNops',
+  'waitsForVblank',
+  'waitsForSprite0Hit',
+  'waitsForZpValue',
+  'waitsForInterrupt'
+];
+
+const POI_KIND_ORDER_INDEX = Object.fromEntries(
+  POI_KIND_ORDER.map((kind, index) => [kind, index])
+);
+
 function poiKindTitle(kind) {
-  if (kind === 'waitsForInterrupt') return 'Waits for interrupt';
-  if (kind === 'waitsForZpValue') return 'Waits for ZP value';
-  if (kind === 'waitsForVblank') return 'Waits for vblank';
-  if (kind === 'waitsForSprite0Hit') return 'Waits for sprite 0 hit';
-  if (kind === 'setsScroll') return 'Sets scroll';
-  if (kind === 'oamDma') return 'OAM DMA';
-  if (kind === 'dataTables') return 'Data table reads';
-  if (kind === 'pointerTables') return 'Pointer tables';
-  if (kind === 'monotoneTables') return 'Monotone table reads';
-  if (kind === 'alignmentNops') return 'Alignment NOPs';
-  return kind;
+  return POI_KIND_TITLES[kind] || kind;
+}
+
+function poiKindOrderIndex(kind) {
+  return POI_KIND_ORDER_INDEX[kind] ?? 999;
 }
 
 function groupPois(pointsOfInterest) {
@@ -307,12 +344,9 @@ function groupPois(pointsOfInterest) {
     if (!byKind.has(kind)) byKind.set(kind, []);
     byKind.get(kind).push(p);
   }
-  // Stable-ish order
-  const order = ['oamDma', 'dataTables', 'pointerTables', 'monotoneTables', 'setsScroll', 'alignmentNops', 'waitsForVblank', 'waitsForSprite0Hit', 'waitsForZpValue', 'waitsForInterrupt'];
   const keys = Array.from(byKind.keys()).sort((a, b) => {
-    const ia = order.indexOf(a);
-    const ib = order.indexOf(b);
-    if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    const orderDelta = poiKindOrderIndex(a) - poiKindOrderIndex(b);
+    if (orderDelta !== 0) return orderDelta;
     return a.localeCompare(b);
   });
   return keys.map((k) => ({ kind: k, items: byKind.get(k) }));

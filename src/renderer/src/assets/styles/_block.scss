@@ -7,13 +7,6 @@
   overflow: hidden;
 }
 
-.nv-card.nv-code {
-  border-left: 4px solid $accent;
-}
-
-.nv-card.nv-code.is-probable {
-  border-left-color: $probable;
-}
 
 .nv-card.is-focused {
   border-color: $accent;
@@ -83,6 +76,21 @@
 
 .nv-sub-rom {
   opacity: 0.75;
+}
+
+.nv-block-debug {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: $muted;
+}
+
+.nv-block-debug-section + .nv-block-debug-section {
+  margin-top: 4px;
+}
+
+.nv-block-debug-line {
+  font-variant-numeric: tabular-nums;
 }
 
 .nv-sub-dot {

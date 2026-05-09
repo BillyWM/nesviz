@@ -16,10 +16,6 @@ function startRomFolderScan(folderPaths, opts = null, callback = null) {
     return { ok: false, error: 'ROM folder scan callback is required' };
   }
 
-  if (typeof MessageChannel !== 'function') {
-    return { ok: false, error: 'MessageChannel is not available' };
-  }
-
   const token = `romFolderScan:${nextRomFolderScanToken++}`;
   const channel = new MessageChannel();
   let finished = false;
@@ -36,7 +32,7 @@ function startRomFolderScan(folderPaths, opts = null, callback = null) {
     callback(payload);
     if (payload?.type === 'done' || payload?.type === 'error') finish();
   };
-  if (typeof channel.port1.start === 'function') channel.port1.start();
+  channel.port1.start();
 
   activeRomFolderScans.set(token, { port: channel.port1 });
   ipcRenderer.postMessage('nesviz:romFolderScan:start', {
@@ -76,6 +72,7 @@ contextBridge.exposeInMainWorld('nesviz', {
   getGraphLayoutCache: () => ipcRenderer.invoke('nesviz:getGraphLayoutCache'),
   saveGraphLayoutCache: (payload) => ipcRenderer.invoke('nesviz:saveGraphLayoutCache', payload),
   getPreferencesAnalysisCacheStats: () => ipcRenderer.invoke('nesviz:preferences:getAnalysisCacheStats'),
+  getViewSettings: () => ipcRenderer.invoke('nesviz:getViewSettings'),
   clearPreferencesAnalysisCache: () => ipcRenderer.invoke('nesviz:preferences:clearAnalysisCache'),
 
   getTuningState: () => ipcRenderer.invoke('nesviz:getTuningState'),
@@ -155,6 +152,11 @@ contextBridge.exposeInMainWorld('nesviz', {
     ipcRenderer.on('nesviz:menuSetShowDebugInfo', listener);
     return () => ipcRenderer.removeListener('nesviz:menuSetShowDebugInfo', listener);
   },
+  onMenuSetShowNamedConstants: (callback) => {
+    const listener = (_evt, payload) => callback(payload?.checked !== false);
+    ipcRenderer.on('nesviz:menuSetShowNamedConstants', listener);
+    return () => ipcRenderer.removeListener('nesviz:menuSetShowNamedConstants', listener);
+  },
 
   onAnalysisLogUpdated: (callback) => {
     const listener = (_evt, payload) => callback(payload);
@@ -186,11 +188,17 @@ contextBridge.exposeInMainWorld('nesviz', {
     return () => ipcRenderer.removeListener('nesviz:graphDataChanged', listener);
   },
 
-  // Main process -> main window: navigation requests from the Labels window.
+  // Main process -> main window: navigation requests from secondary windows.
   onLabelsNavigate: (callback) => {
     const listener = (_evt, payload) => callback(payload);
     ipcRenderer.on('nesviz:labelsNavigate', listener);
     return () => ipcRenderer.removeListener('nesviz:labelsNavigate', listener);
+  },
+
+  onMemoryMapNavigate: (callback) => {
+    const listener = (_evt, payload) => callback(payload);
+    ipcRenderer.on('nesviz:memoryMapNavigate', listener);
+    return () => ipcRenderer.removeListener('nesviz:memoryMapNavigate', listener);
   },
 
   // Streamed VSA progress updates from the analysis worker.
@@ -206,10 +214,15 @@ contextBridge.exposeInMainWorld('nesviz', {
     ipcRenderer.send('nesviz:romlist:openRom', { filepath });
   },
 
-  // Labels secondary window -> main process
+  // Secondary windows -> main process
   labelsNavigate: (payload) => {
     if (!payload || typeof payload !== 'object') return;
     ipcRenderer.send('nesviz:labels:navigate', payload);
+  },
+
+  memoryMapNavigate: (payload) => {
+    if (!payload || typeof payload !== 'object') return;
+    ipcRenderer.send('nesviz:memoryMap:navigate', payload);
   },
 
   // Main process -> ROM list secondary window

@@ -1,4 +1,4 @@
-import { Menu } from 'electron';
+import { ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import { showRomListWindow } from './romListWindow.js';
 import { showPreferencesWindow } from './preferencesWindow.js';
@@ -11,10 +11,12 @@ import { showHeatmapWindow } from './heatmapWindow.js';
 import { showGraphWindow } from './graphWindow.js';
 import { showMarkovWindow } from './markov/markovWindow.js';
 import { showMarkovMapWindow } from './markov/markovMapWindow.js';
+import { getUserSettings, getUserSettingsSync, setShowNamedConstantsSetting } from './userDataStore.js';
 
 let currentWin = null;
 let currentRecentRoms = [];
 let currentShowDebugInfo = false;
+let currentShowNamedConstants = true;
 
 function buildTemplate({ win, recentRoms }) {
   const devUrl = process.env.VITE_DEV_SERVER_URL || process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL || process.env.ELECTRON_RENDERER_URL;
@@ -72,7 +74,19 @@ function buildTemplate({ win, recentRoms }) {
     },
     {
       label: 'View',
-      submenu: []
+      submenu: [
+        {
+          label: 'Named constants',
+          type: 'checkbox',
+          checked: !!currentShowNamedConstants,
+          click: (menuItem) => {
+            currentShowNamedConstants = !!menuItem?.checked;
+            void setShowNamedConstantsSetting(currentShowNamedConstants);
+            if (!win || win.isDestroyed()) return;
+            win.webContents.send('nesviz:menuSetShowNamedConstants', { checked: currentShowNamedConstants });
+          }
+        }
+      ]
     },
     {
       label: 'Window',
@@ -209,7 +223,17 @@ function rebuildMenu() {
 export function installAppMenu({ win, recentRoms = [] }) {
   currentWin = win;
   currentRecentRoms = Array.isArray(recentRoms) ? recentRoms.slice(0, 10) : [];
+  currentShowNamedConstants = getUserSettingsSync().showNamedConstants !== false;
   rebuildMenu();
+}
+
+export function registerMenuSettingsIpc() {
+  ipcMain.handle('nesviz:getViewSettings', async () => {
+    const settings = await getUserSettings();
+    currentShowNamedConstants = settings.showNamedConstants !== false;
+    rebuildMenu();
+    return { showNamedConstants: currentShowNamedConstants };
+  });
 }
 
 export function updateRecentRoms(recentRoms) {

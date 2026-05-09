@@ -5,6 +5,7 @@ import { attachMonotoneReaderEvidence } from '../data/attachMonotoneReaderEviden
 import { attachMonotoneReaderSpans } from '../data/attachMonotoneReaderSpans.js';
 import { synthesizeMonotoneReadFacts } from '../semanticFacts/synthesizeMonotoneReadFacts.js';
 import { attachFlowRomTargets } from './attachFlowRomTargets.js';
+import { buildLoopGuides } from './buildLoopGuides.js';
 
 function composeRawToDisplayBlockIds(rawBlockIdAliases, coalescedRawToDisplayBlockIds) {
   const out = {};
@@ -30,6 +31,10 @@ export function buildDisplayAnalysis(rawAnalysis, config = DEFAULT_COALESCE_CONF
   const composedRawToDisplayBlockIds = composeRawToDisplayBlockIds(rawAnalysis?.rawBlockIdAliases || null, rawToDisplayBlockIds);
   analysis.rawToDisplayBlockIds = composedRawToDisplayBlockIds;
   attachFlowRomTargets({ rawAnalysis, displayAnalysis: analysis });
+  buildLoopGuides({
+    displayBlocks: analysis.blocks,
+    observationsResult: analysis.vsaFacts
+  });
 
   analysis.monotoneTables = attachMonotoneReaderEvidence({
     displayBlocks: analysis.blocks,

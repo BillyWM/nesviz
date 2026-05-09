@@ -229,11 +229,36 @@ function encodeValueFlowObservationKey(f) {
   return `valueFlow8:${at}:${op}:${dst}:${srcRegs}:${imm}:${ss}:${av}:${bm}`;
 }
 
+function encodeBranchFlagUseObservationKey(f) {
+  const at = typeof f?.atRomOff === 'number' ? (f.atRomOff >>> 0) : 'na';
+  const mnemonic = f?.branch?.mnemonic || 'branch';
+  const flag = f?.branch?.flag || 'flag';
+  const sourceRomOff = typeof f?.source?.romOff === 'number' ? (f.source.romOff >>> 0) : 'nosrc';
+  const effect = f?.source?.effect || 'unknown';
+  return `branchFlagUse:${at}:${mnemonic}:${flag}:${sourceRomOff}:${effect}`;
+}
+
+function mergePpuDest(target, source) {
+  if (!target || !source) return null;
+  if (target.class !== source.class) return null;
+  return {
+    class: target.class,
+    candidates: normalizeNumberList([...(target.candidates || []), ...(source.candidates || [])]).map((value) => value & 0x3fff),
+    normalizedCandidates: normalizeNumberList([...(target.normalizedCandidates || []), ...(source.normalizedCandidates || [])]).map((value) => value & 0x3fff)
+  };
+}
+
 function mergeObservationContext(target, source) {
   target.entryFamilies = normalizeStringList([...(target.entryFamilies || []), ...(source.entryFamilies || [])]);
   target.functionIds = normalizeStringList([...(target.functionIds || []), ...(source.functionIds || [])]);
   if (typeof target.rawBlockId !== 'string' && typeof source.rawBlockId === 'string') target.rawBlockId = source.rawBlockId;
+  if (target.vsaRole !== 'candidate' && source.vsaRole === 'candidate') target.vsaRole = 'candidate';
+  if (target.kind === 'store8' || source.kind === 'store8') {
+    target.ppuDest = mergePpuDest(target.ppuDest, source.ppuDest);
+    target.ppuCtrl = mergePpuCtrl(target.ppuCtrl, source.ppuCtrl);
+  }
 }
+
 
 function emitObservation({ observationsByKey, observationsOut }, key, observation, nextObservationId) {
   const existing = observationsByKey.get(key);
@@ -250,8 +275,91 @@ function emitObservation({ observationsByKey, observationsOut }, key, observatio
 function baseObservationFields(payload) {
   return {
     rawBlockId: typeof payload?.rawBlockId === 'string' ? payload.rawBlockId : null,
+    vsaRole: payload?.vsaRole === 'candidate' ? 'candidate' : 'confirmed',
     entryFamilies: normalizeStringList(payload?.entryFamilies),
     functionIds: normalizeStringList(payload?.functionIds)
+  };
+}
+
+function normalizePpuDest(ppuDest) {
+  const cls = ppuDest?.class === 'palettes' || ppuDest?.class === 'attributes' ? ppuDest.class : 'unknown';
+  const candidates = normalizeNumberList(ppuDest?.candidates || []).map((value) => value & 0x3fff);
+  const normalizedCandidates = normalizeNumberList(ppuDest?.normalizedCandidates || []).map((value) => value & 0x3fff);
+  return { class: cls, candidates, normalizedCandidates };
+}
+
+const PPUCTRL_FIELDS = [
+  'nametableBase',
+  'vramIncrement',
+  'spritePatternTable',
+  'backgroundPatternTable',
+  'spriteSize',
+  'masterSlave',
+  'nmiEnabled'
+];
+
+function normalizePpuCtrlDecoded(decoded) {
+  return {
+    nametableBase: typeof decoded?.nametableBase === 'number' ? (decoded.nametableBase & 0x3fff) : null,
+    vramIncrement: decoded?.vramIncrement === 1 || decoded?.vramIncrement === 32 ? decoded.vramIncrement : null,
+    spritePatternTable: decoded?.spritePatternTable === 0 || decoded?.spritePatternTable === 0x1000 ? decoded.spritePatternTable : null,
+    backgroundPatternTable: decoded?.backgroundPatternTable === 0 || decoded?.backgroundPatternTable === 0x1000 ? decoded.backgroundPatternTable : null,
+    spriteSize: decoded?.spriteSize === '8x8' || decoded?.spriteSize === '8x16' ? decoded.spriteSize : null,
+    masterSlave: decoded?.masterSlave === 0 || decoded?.masterSlave === 1 ? decoded.masterSlave : null,
+    nmiEnabled: decoded?.nmiEnabled === true || decoded?.nmiEnabled === false ? decoded.nmiEnabled : null
+  };
+}
+
+function normalizePpuCtrlChanged(changed) {
+  const out = {};
+  for (const field of PPUCTRL_FIELDS) {
+    out[field] = changed?.[field] === true ? true : changed?.[field] === false ? false : null;
+  }
+  return out;
+}
+
+function ppuCtrlHasKnownField(ppuCtrl) {
+  const decoded = ppuCtrl?.decoded || {};
+  return PPUCTRL_FIELDS.some((field) => decoded[field] != null);
+}
+
+function normalizePpuCtrl(ppuCtrl) {
+  if (!ppuCtrl) return null;
+  const decoded = normalizePpuCtrlDecoded(ppuCtrl.decoded);
+  const normalized = {
+    candidates: normalizeNumberList(ppuCtrl.candidates || []).map((value) => value & 0xff),
+    candidateSource: typeof ppuCtrl.candidateSource === 'string' ? ppuCtrl.candidateSource : null,
+    knownMask: clamp8(ppuCtrl.knownMask ?? 0),
+    knownValue: clamp8(ppuCtrl.knownValue ?? 0),
+    decoded,
+    previousDecoded: normalizePpuCtrlDecoded(ppuCtrl.previousDecoded),
+    changed: normalizePpuCtrlChanged(ppuCtrl.changed)
+  };
+  if (!normalized.candidates.length && !ppuCtrlHasKnownField(normalized)) return null;
+  return normalized;
+}
+
+function mergePpuCtrl(target, source) {
+  const left = normalizePpuCtrl(target);
+  const right = normalizePpuCtrl(source);
+  if (!left) return right;
+  if (!right) return left;
+  const decoded = {};
+  const previousDecoded = {};
+  const changed = {};
+  for (const field of PPUCTRL_FIELDS) {
+    decoded[field] = left.decoded[field] != null && left.decoded[field] === right.decoded[field] ? left.decoded[field] : null;
+    previousDecoded[field] = left.previousDecoded[field] != null && left.previousDecoded[field] === right.previousDecoded[field] ? left.previousDecoded[field] : null;
+    changed[field] = left.changed[field] != null && left.changed[field] === right.changed[field] ? left.changed[field] : null;
+  }
+  return {
+    candidates: normalizeNumberList([...(left.candidates || []), ...(right.candidates || [])]).map((value) => value & 0xff),
+    candidateSource: left.candidateSource && left.candidateSource === right.candidateSource ? left.candidateSource : null,
+    knownMask: left.knownMask & right.knownMask,
+    knownValue: (left.knownValue & right.knownValue) & (left.knownMask & right.knownMask),
+    decoded,
+    previousDecoded,
+    changed
   };
 }
 
@@ -261,7 +369,7 @@ export function createObservationCollector() {
   let nextObservationId = 1;
 
   return {
-    recordRead({ line, dstReg, src, value, prov, addrInfo = null, rawBlockId = null, entryFamilies = [], functionIds = [] }) {
+    recordRead({ line, dstReg, src, value, prov, addrInfo = null, rawBlockId = null, vsaRole = 'confirmed', entryFamilies = [], functionIds = [] }) {
       const km = clamp8(value?.bits?.knownMask ?? 0);
       if (!src?.space) return;
       const normalizedPhysical = src.space === 'rom'
@@ -293,7 +401,7 @@ export function createObservationCollector() {
         defs: useDef.defs,
         inputProvIds: normalizeNumberList(addrFlow.addrProvIds),
         outputProvIds: provIdsFrom(prov),
-        ...baseObservationFields({ rawBlockId, entryFamilies, functionIds })
+        ...baseObservationFields({ rawBlockId, vsaRole, entryFamilies, functionIds })
       };
       observation.cpuAddr = typeof line.cpuAddr === 'number' ? (line.cpuAddr & 0xffff) : null;
       if (emitObservation({ observationsByKey, observationsOut }, encodeReadObservationKey(observation), observation, nextObservationId)) {
@@ -301,8 +409,10 @@ export function createObservationCollector() {
       }
     },
 
-    recordWrite({ line, cpuAddr, srcReg = null, dst, value, prov, rawBlockId = null, entryFamilies = [], functionIds = [] }) {
-      if (!shouldEmitStoreObservation(value)) return;
+    recordWrite({ line, cpuAddr, srcReg = null, dst, value, prov, ppuDest = null, ppuCtrl = null, rawBlockId = null, vsaRole = 'confirmed', entryFamilies = [], functionIds = [] }) {
+      const normalizedPpuDest = normalizePpuDest(ppuDest);
+      const normalizedPpuCtrl = normalizePpuCtrl(ppuCtrl);
+      if (!shouldEmitStoreObservation(value) && normalizedPpuDest.class === 'unknown' && !normalizedPpuCtrl) return;
       const spanStart = (typeof value?.spanStartRomOff === 'number') ? (value.spanStartRomOff >>> 0) : (line.romOff >>> 0);
       const span = mkSpan(spanStart, spanEndFromLine(line));
       if (!span) return;
@@ -315,6 +425,8 @@ export function createObservationCollector() {
         cpuAddr: typeof cpuAddr === 'number' ? (cpuAddr & 0xffff) : null,
         srcReg: realSrcReg,
         dst: dst ? { ...dst, addressKey: addressKey(dst.space, dst.addr) } : null,
+        ppuDest: normalizedPpuDest.class !== 'unknown' ? normalizedPpuDest : null,
+        ppuCtrl: normalizedPpuCtrl,
         value: {
           abs: value.abs,
           bits: { knownMask: clamp8(value?.bits?.knownMask ?? 0), knownValue: clamp8(value?.bits?.knownValue ?? 0) }
@@ -325,14 +437,14 @@ export function createObservationCollector() {
         defs: useDef.defs,
         inputProvIds: provIdsFrom(prov),
         outputProvIds: [],
-        ...baseObservationFields({ rawBlockId, entryFamilies, functionIds })
+        ...baseObservationFields({ rawBlockId, vsaRole, entryFamilies, functionIds })
       };
       if (emitObservation({ observationsByKey, observationsOut }, encodeStoreObservationKey(observation), observation, nextObservationId)) {
         nextObservationId++;
       }
     },
 
-    recordCompare({ line, reg, lhs, rhs, rhsValue, outcomes, prov, rawBlockId = null, entryFamilies = [], functionIds = [] }) {
+    recordCompare({ line, reg, lhs, rhs, rhsValue, outcomes, prov, rawBlockId = null, vsaRole = 'confirmed', entryFamilies = [], functionIds = [] }) {
       const normalizedRhs = rhs?.kind === 'mem' && rhs?.src
         ? {
             ...rhs,
@@ -368,7 +480,7 @@ export function createObservationCollector() {
         defs: [],
         inputProvIds: provIdsFrom(lhs?.prov, rhsValue?.prov),
         outputProvIds: [],
-        ...baseObservationFields({ rawBlockId, entryFamilies, functionIds })
+        ...baseObservationFields({ rawBlockId, vsaRole, entryFamilies, functionIds })
       };
       observation.cpuAddr = typeof line.cpuAddr === 'number' ? (line.cpuAddr & 0xffff) : null;
       if (emitObservation({ observationsByKey, observationsOut }, encodeCmpObservationKey(observation), observation, nextObservationId)) {
@@ -376,7 +488,7 @@ export function createObservationCollector() {
       }
     },
 
-    recordValueFlow({ line, opKind, dstReg = null, dst = null, srcRegs = [], imm = null, value, prov, inputProvs = [], rawBlockId = null, entryFamilies = [], functionIds = [] }) {
+    recordValueFlow({ line, opKind, dstReg = null, dst = null, srcRegs = [], imm = null, value, prov, inputProvs = [], rawBlockId = null, vsaRole = 'confirmed', entryFamilies = [], functionIds = [] }) {
       if ((!dstReg && !(dst?.space)) || !value) return;
       const spanStart = (typeof value?.spanStartRomOff === 'number') ? (value.spanStartRomOff >>> 0) : (line.romOff >>> 0);
       const span = mkSpan(spanStart, spanEndFromLine(line));
@@ -404,14 +516,52 @@ export function createObservationCollector() {
         defs: useDef.defs,
         inputProvIds: provIdsFrom(...(Array.isArray(inputProvs) ? inputProvs : [])),
         outputProvIds: provIdsFrom(prov),
-        ...baseObservationFields({ rawBlockId, entryFamilies, functionIds })
+        ...baseObservationFields({ rawBlockId, vsaRole, entryFamilies, functionIds })
       };
       if (emitObservation({ observationsByKey, observationsOut }, encodeValueFlowObservationKey(observation), observation, nextObservationId)) {
         nextObservationId++;
       }
     },
 
-    recordZpPtr16({ zpAddr, value16, spanStartRomOff, spanEndRomOff, prov, rawBlockId = null, entryFamilies = [], functionIds = [] }) {
+    recordBranchFlagUse({ line, branch, source = null, valueProof = null, rawBlockId = null, vsaRole = 'confirmed', entryFamilies = [], functionIds = [] }) {
+      if (!line || !branch?.mnemonic || !branch?.flag) return;
+      const observation = {
+        kind: 'branchFlagUse',
+        label: 'Branch flag use',
+        atRomOff: line.romOff >>> 0,
+        cpuAddr: typeof line.cpuAddr === 'number' ? (line.cpuAddr & 0xffff) : null,
+        branch: {
+          mnemonic: branch.mnemonic,
+          flag: branch.flag,
+          takenWhen: branch.takenWhen === 0 || branch.takenWhen === 1 ? branch.takenWhen : null,
+          targetRomOff: typeof branch.targetRomOff === 'number' ? (branch.targetRomOff >>> 0) : null,
+          fallthroughRomOff: typeof branch.fallthroughRomOff === 'number' ? (branch.fallthroughRomOff >>> 0) : null,
+          targetCpuAddr: typeof branch.targetCpuAddr === 'number' ? (branch.targetCpuAddr & 0xffff) : null,
+          fallthroughCpuAddr: typeof branch.fallthroughCpuAddr === 'number' ? (branch.fallthroughCpuAddr & 0xffff) : null
+        },
+        source: source ? {
+          ...source,
+          romOff: typeof source.romOff === 'number' ? (source.romOff >>> 0) : null,
+          cpuAddr: typeof source.cpuAddr === 'number' ? (source.cpuAddr & 0xffff) : null,
+          subject: source.subject && typeof source.subject === 'object' ? { ...source.subject } : null
+        } : null,
+        valueProof: {
+          knownFlagValue: valueProof?.knownFlagValue === 0 || valueProof?.knownFlagValue === 1 ? valueProof.knownFlagValue : null,
+          knownTaken: typeof valueProof?.knownTaken === 'boolean' ? valueProof.knownTaken : null
+        },
+        uses: [],
+        defs: [],
+        inputProvIds: [],
+        outputProvIds: [],
+        basis: { romOffSpan: mkSpan(line.romOff >>> 0, spanEndFromLine(line)) },
+        ...baseObservationFields({ rawBlockId, vsaRole, entryFamilies, functionIds })
+      };
+      if (emitObservation({ observationsByKey, observationsOut }, encodeBranchFlagUseObservationKey(observation), observation, nextObservationId)) {
+        nextObservationId++;
+      }
+    },
+
+    recordZpPtr16({ zpAddr, value16, spanStartRomOff, spanEndRomOff, prov, rawBlockId = null, vsaRole = 'confirmed', entryFamilies = [], functionIds = [] }) {
       const span = mkSpan(spanStartRomOff, spanEndRomOff);
       if (!span) return;
       const useDef = buildZpPtrUsesDefs(zpAddr);
@@ -428,7 +578,7 @@ export function createObservationCollector() {
         defs: useDef.defs,
         inputProvIds: provIdsFrom(prov),
         outputProvIds: provIdsFrom(prov),
-        ...baseObservationFields({ rawBlockId, entryFamilies, functionIds })
+        ...baseObservationFields({ rawBlockId, vsaRole, entryFamilies, functionIds })
       };
       const key = `zpPtr16:${span.start}:${observation.zpAddr}:${observation.value16}:${span.start}-${span.end}`;
       if (emitObservation({ observationsByKey, observationsOut }, key, observation, nextObservationId)) {
@@ -437,12 +587,13 @@ export function createObservationCollector() {
     },
 
     getResult() {
-      const counts = { store8: 0, read8: 0, cmp8: 0, zpPtr16: 0, valueFlow8: 0 };
+      const counts = { store8: 0, read8: 0, cmp8: 0, zpPtr16: 0, valueFlow8: 0, branchFlagUse: 0, ppuCtrlWrite: 0 };
       for (const observation of observationsOut) {
         if (counts[observation.kind] != null) counts[observation.kind]++;
+        if (observation.kind === 'store8' && observation.ppuCtrl) counts.ppuCtrlWrite++;
       }
       return {
-        version: 5,
+        version: 7,
         observations: observationsOut,
         facts: observationsOut,
         stats: {

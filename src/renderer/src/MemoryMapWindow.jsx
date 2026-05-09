@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fmtHex } from '../../shared/utils/numberUtils.js';
 
-const ROW_HEIGHT = 16;
 const SECTION_GAP = 18;
+const FUNCTION_PREVIEW_COUNT = 20;
+const FUNCTION_EXPANDED_COUNT = 24;
 
-function buildRows(sizeBytes, occupiedRanges, rowWidthBytes) {
+
+function buildRows(sizeBytes, occupiedRanges, annotationRanges, rowWidthBytes) {
   const rows = [];
-  const ranges = Array.isArray(occupiedRanges) ? occupiedRanges.slice() : [];
-  let rangeIndex = 0;
+  const occupied = Array.isArray(occupiedRanges) ? occupiedRanges.slice() : [];
+  const annotations = Array.isArray(annotationRanges) ? annotationRanges.slice() : [];
+  let occupiedIndex = 0;
+  let annotationIndex = 0;
+
   for (let rowStart = 0; rowStart < sizeBytes; rowStart += rowWidthBytes) {
-    const rowEnd = Math.min(sizeBytes, rowStart + rowWidthBytes);
-    while (rangeIndex < ranges.length && (ranges[rangeIndex]?.end ?? 0) <= rowStart) rangeIndex++;
+    const rowEnd = Math.min(sizeBytes - 1, rowStart + rowWidthBytes - 1);
+    while (occupiedIndex < occupied.length && (occupied[occupiedIndex]?.end ?? -1) < rowStart) occupiedIndex++;
+    while (annotationIndex < annotations.length && (annotations[annotationIndex]?.end ?? -1) < rowStart) annotationIndex++;
+
     const spans = [];
     let cursor = rowStart;
-    let idx = rangeIndex;
-    while (idx < ranges.length) {
-      const range = ranges[idx];
+    let idx = occupiedIndex;
+    while (idx < occupied.length) {
+      const range = occupied[idx];
       const start = Number(range?.start);
       const end = Number(range?.end);
       const type = String(range?.type || 'group');
@@ -23,19 +30,45 @@ function buildRows(sizeBytes, occupiedRanges, rowWidthBytes) {
         idx++;
         continue;
       }
-      if (start >= rowEnd) break;
+      if (start > rowEnd) break;
       const overlapStart = Math.max(rowStart, start);
       const overlapEnd = Math.min(rowEnd, end);
-      if (overlapEnd > overlapStart) {
-        if (cursor < overlapStart) spans.push({ start: cursor - rowStart, end: overlapStart - rowStart, type: 'empty' });
+      if (overlapEnd >= overlapStart) {
+        if (cursor < overlapStart) spans.push({ start: cursor - rowStart, end: overlapStart - rowStart - 1, type: 'empty' });
         spans.push({ start: overlapStart - rowStart, end: overlapEnd - rowStart, type });
-        cursor = overlapEnd;
+        cursor = overlapEnd + 1;
       }
       if (end <= rowEnd) idx++;
       else break;
     }
-    if (cursor < rowEnd) spans.push({ start: cursor - rowStart, end: rowEnd - rowStart, type: 'empty' });
-    rows.push({ start: rowStart, end: rowEnd, spans });
+    if (cursor <= rowEnd) spans.push({ start: cursor - rowStart, end: rowEnd - rowStart, type: 'empty' });
+
+    const annotationSpans = [];
+    let annIdx = annotationIndex;
+    while (annIdx < annotations.length) {
+      const range = annotations[annIdx];
+      const start = Number(range?.start);
+      const end = Number(range?.end);
+      const annotationIds = Array.isArray(range?.annotationIds) ? range.annotationIds.filter(Boolean) : [];
+      if (!Number.isFinite(start) || !Number.isFinite(end) || !annotationIds.length) {
+        annIdx++;
+        continue;
+      }
+      if (start > rowEnd) break;
+      const overlapStart = Math.max(rowStart, start);
+      const overlapEnd = Math.min(rowEnd, end);
+      if (overlapEnd >= overlapStart) {
+        annotationSpans.push({
+          start: overlapStart - rowStart,
+          end: overlapEnd - rowStart,
+          annotationIds
+        });
+      }
+      if (end <= rowEnd) annIdx++;
+      else break;
+    }
+
+    rows.push({ start: rowStart, end: rowEnd, spans, annotationSpans });
   }
   return rows;
 }
@@ -67,7 +100,7 @@ function sliceRanges(occupiedRanges, sectionStart, sectionEnd) {
     if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
     const overlapStart = Math.max(sectionStart, start);
     const overlapEnd = Math.min(sectionEnd, end);
-    if (overlapEnd <= overlapStart) continue;
+    if (overlapEnd < overlapStart) continue;
     ranges.push({
       start: overlapStart - sectionStart,
       end: overlapEnd - sectionStart,
@@ -77,20 +110,205 @@ function sliceRanges(occupiedRanges, sectionStart, sectionEnd) {
   return ranges;
 }
 
-function buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, sectionStart, sectionEnd) {
-  const start = Math.max(0, Math.min(sizeBytes, sectionStart | 0));
-  const end = Math.max(start, Math.min(sizeBytes, sectionEnd | 0));
-  return buildRows(end - start, sliceRanges(occupiedRanges, start, end), rowWidthBytes);
+function sliceAnnotationRanges(annotationRanges, sectionStart, sectionEnd) {
+  const ranges = [];
+  for (const range of Array.isArray(annotationRanges) ? annotationRanges : []) {
+    const start = Number(range?.start);
+    const end = Number(range?.end);
+    const annotationIds = Array.isArray(range?.annotationIds) ? range.annotationIds.filter(Boolean) : [];
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !annotationIds.length) continue;
+    const overlapStart = Math.max(sectionStart, start);
+    const overlapEnd = Math.min(sectionEnd, end);
+    if (overlapEnd < overlapStart) continue;
+    ranges.push({
+      start: overlapStart - sectionStart,
+      end: overlapEnd - sectionStart,
+      annotationIds
+    });
+  }
+  return ranges;
 }
 
-function MemorySection({ title, baseLabel, rows, cellSizePx, extraTop = 0 }) {
+function buildRowsForSection(sizeBytes, occupiedRanges, annotationRanges, rowWidthBytes, sectionStart, sectionEnd) {
+  if ((sizeBytes | 0) <= 0) return [];
+  const start = Math.max(0, Math.min(sizeBytes - 1, sectionStart | 0));
+  const end = Math.max(start, Math.min(sizeBytes - 1, sectionEnd | 0));
+  return buildRows(end - start + 1, sliceRanges(occupiedRanges, start, end), sliceAnnotationRanges(annotationRanges, start, end), rowWidthBytes);
+}
+
+function rangeWidth(range) {
+  if (range?.space === 'zp') return 2;
+  if (range?.space === 'rom') return 6;
+  return 4;
+}
+
+function formatRange(range) {
+  const start = Number(range?.start);
+  const end = Number(range?.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return '$????';
+  const width = rangeWidth(range);
+  const len = end - start + 1;
+  if (len <= 1) return `$${fmtHex(start, width)}`;
+  if (len === 2) return `$${fmtHex(start, width)}/$${fmtHex(end, width)}`;
+  return `$${fmtHex(start, width)}-$${fmtHex(end, width)}`;
+}
+
+function functionSort(a, b) {
+  const ar = typeof a.romStart === 'number' ? a.romStart : Number.MAX_SAFE_INTEGER;
+  const br = typeof b.romStart === 'number' ? b.romStart : Number.MAX_SAFE_INTEGER;
+  return ar - br || String(a.label || '').localeCompare(String(b.label || '')) || String(a.id || '').localeCompare(String(b.id || ''));
+}
+
+function sectionKey(section) {
+  const range = section?.range || {};
+  return `${range.space}:${range.start}:${range.end}:${section?.label || ''}`;
+}
+
+function buildPopupSections(annotationIds, annotationsById) {
+  const byKey = new Map();
+  for (const id of annotationIds || []) {
+    const annotation = annotationsById.get(id);
+    if (!annotation) continue;
+    const range = annotation.range || {};
+    const key = `${range.space}:${range.start}:${range.end}:${annotation.label}`;
+    let section = byKey.get(key);
+    if (!section) {
+      section = {
+        label: annotation.label,
+        range,
+        functionsByRomStart: new Map()
+      };
+      byKey.set(key, section);
+    }
+    for (const fn of annotation.functions || []) {
+      if (typeof fn?.romStart !== 'number') continue;
+      const romStart = fn.romStart >>> 0;
+      const prev = section.functionsByRomStart.get(romStart);
+      const useSites = Array.isArray(fn.useSites) ? fn.useSites : [];
+      if (prev) {
+        const bySite = new Map(prev.useSites.map((site) => [
+          `${site.romOff}:${site.rawBlockId || ''}:${site.traceId || ''}:${site.observationId || ''}`,
+          site
+        ]));
+        for (const site of useSites) {
+          bySite.set(`${site.romOff}:${site.rawBlockId || ''}:${site.traceId || ''}:${site.observationId || ''}`, site);
+        }
+        prev.useSites = Array.from(bySite.values()).sort((a, b) => (a.romOff - b.romOff));
+        prev.primaryUseSiteRomOff = prev.useSites[0]?.romOff ?? null;
+        continue;
+      }
+      section.functionsByRomStart.set(romStart, {
+        id: String(fn.id || romStart),
+        romStart,
+        label: String(fn.label || ''),
+        useSites,
+        primaryUseSiteRomOff: typeof fn.primaryUseSiteRomOff === 'number'
+          ? (fn.primaryUseSiteRomOff >>> 0)
+          : (useSites[0]?.romOff ?? null)
+      });
+    }
+  }
+
+  return Array.from(byKey.values())
+    .map((section) => ({
+      ...section,
+      functions: Array.from(section.functionsByRomStart.values()).sort(functionSort)
+    }))
+    .sort((a, b) => (a.range?.start ?? 0) - (b.range?.start ?? 0)
+      || (a.range?.end ?? 0) - (b.range?.end ?? 0)
+      || String(a.label).localeCompare(String(b.label)));
+}
+
+function visibleFunctions(functions, expansionMode) {
+  if (expansionMode === 'all') return functions;
+  if (expansionMode === 'expanded') return functions.slice(0, FUNCTION_EXPANDED_COUNT);
+  return functions.slice(0, FUNCTION_PREVIEW_COUNT);
+}
+
+function FunctionList({ section, expansionMode, onSetExpansion, onNavigateFunction }) {
+  if (!section.functions.length) return null;
+  const visible = visibleFunctions(section.functions, expansionMode);
+  const hiddenCount = section.functions.length - visible.length;
+  return (
+    <div className="memory-map-annotation-functions">
+      <span className="memory-map-annotation-functions-label">Functions:</span>{' '}
+      {visible.map((fn) => (
+        <button
+          key={fn.romStart}
+          type="button"
+          className="memory-map-annotation-function"
+          onClick={(event) => {
+            event.stopPropagation();
+            onNavigateFunction(fn);
+          }}
+          title={typeof fn.primaryUseSiteRomOff === 'number' ? `Jump to use site ROM+0x${fmtHex(fn.primaryUseSiteRomOff, 6)}` : 'Missing use-site target'}
+          disabled={typeof fn.primaryUseSiteRomOff !== 'number'}
+        >
+          {fn.label}
+        </button>
+      ))}
+      {hiddenCount > 0 && expansionMode === 'expanded' ? (
+        <button
+          type="button"
+          className="memory-map-annotation-function-more"
+          onClick={() => onSetExpansion('all')}
+        >
+          show {hiddenCount} more
+        </button>
+      ) : null}
+      {hiddenCount > 0 && expansionMode !== 'expanded' ? (
+        <button
+          type="button"
+          className="memory-map-annotation-function-more memory-map-annotation-function-more--ellipsis"
+          onClick={() => onSetExpansion('expanded')}
+          aria-label="Show more functions"
+        >
+          …
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function AnnotationPopup({ popup, annotationsById, functionExpansionBySection, onSetFunctionExpansion, onNavigateFunction }) {
+  if (!popup) return null;
+  const sections = buildPopupSections(popup.annotationIds, annotationsById);
+  if (!sections.length) return null;
+  return (
+    <div
+      className="memory-map-annotation-popup"
+      style={{ left: `${popup.x}px`, top: `${popup.y}px` }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {sections.map((section, index) => {
+        const key = sectionKey(section);
+        return (
+          <div key={key}>
+            {index > 0 ? <hr className="memory-map-annotation-divider" /> : null}
+            <div className="memory-map-annotation-title">
+              {formatRange(section.range)}: {section.label}
+            </div>
+            <FunctionList
+              section={section}
+              expansionMode={functionExpansionBySection[key] || 'preview'}
+              onSetExpansion={(mode) => onSetFunctionExpansion(key, mode)}
+              onNavigateFunction={onNavigateFunction}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MemorySection({ title, baseLabel, rows, cellSizePx, onAnnotationClick, extraTop = 0 }) {
   const labelWidth = 88;
   return (
     <section className="memory-map-section" style={{ '--memory-map-section-top': `${extraTop}px` }}>
       {title ? <div className="memory-map-section-title">{title}</div> : null}
       <div className="memory-map-rows">
         {rows.map((row) => {
-          const rowByteCount = row.end - row.start;
+          const rowByteCount = row.end - row.start + 1;
           const rowWidthPx = rowByteCount * cellSizePx;
           const absoluteStart = baseLabel + row.start;
           return (
@@ -106,16 +324,33 @@ function MemorySection({ title, baseLabel, rows, cellSizePx, extraTop = 0 }) {
                 }}
               >
                 {row.spans.map((span, index) => {
-                  const width = (span.end - span.start) * cellSizePx;
+                  const width = (span.end - span.start + 1) * cellSizePx;
                   if (width <= 0) return null;
                   return (
                     <div
-                      key={index}
+                      key={`span:${index}`}
                       className={spanClassName(span.type)}
                       style={{
                         '--memory-map-span-left': `${span.start * cellSizePx}px`,
                         '--memory-map-span-width': `${width}px`
                       }}
+                    />
+                  );
+                })}
+                {row.annotationSpans.map((span, index) => {
+                  const width = (span.end - span.start + 1) * cellSizePx;
+                  if (width <= 0) return null;
+                  return (
+                    <button
+                      key={`annotation:${index}:${span.annotationIds.join('|')}`}
+                      type="button"
+                      className="memory-map-annotation-span"
+                      style={{
+                        '--memory-map-span-left': `${span.start * cellSizePx}px`,
+                        '--memory-map-span-width': `${width}px`
+                      }}
+                      onClick={(event) => onAnnotationClick(event, span.annotationIds)}
+                      aria-label="Show memory annotation"
                     />
                   );
                 })}
@@ -131,16 +366,20 @@ function MemorySection({ title, baseLabel, rows, cellSizePx, extraTop = 0 }) {
 export default function MemoryMapWindow() {
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('');
+  const [annotationPopup, setAnnotationPopup] = useState(null);
+  const [functionExpansionBySection, setFunctionExpansionBySection] = useState({});
 
   const reload = useCallback(async () => {
     setStatus('');
     try {
-      const res = await window.nesviz?.getMemoryMapData?.();
+      const res = await window.nesviz.getMemoryMapData();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load memory map');
         return;
       }
       setData(res);
+      setAnnotationPopup(null);
+      setFunctionExpansionBySection({});
     } catch (e) {
       setStatus(`Failed to load memory map: ${e?.message ?? String(e)}`);
     }
@@ -151,7 +390,6 @@ export default function MemoryMapWindow() {
   }, [reload]);
 
   useEffect(() => {
-    if (!window?.nesviz?.onMemoryMapDataChanged) return undefined;
     return window.nesviz.onMemoryMapDataChanged(() => {
       reload();
     });
@@ -160,38 +398,77 @@ export default function MemoryMapWindow() {
   const rowWidthBytes = Number(data?.rowWidthBytes) > 0 ? (data.rowWidthBytes | 0) : 64;
   const cellSizePx = Number(data?.cellSizePx) > 0 ? (data.cellSizePx | 0) : 16;
 
+  const annotationsById = useMemo(() => {
+    const map = new Map();
+    for (const annotation of Array.isArray(data?.mapAnnotations) ? data.mapAnnotations : []) {
+      if (typeof annotation?.id === 'string' && annotation.id) map.set(annotation.id, annotation);
+    }
+    return map;
+  }, [data]);
+
+  const handleAnnotationClick = useCallback((event, annotationIds) => {
+    event.stopPropagation();
+    const ids = Array.from(new Set((annotationIds || []).filter(Boolean)));
+    if (!ids.length) return;
+    setFunctionExpansionBySection({});
+    setAnnotationPopup({
+      x: event.clientX + 8,
+      y: event.clientY + 8,
+      annotationIds: ids
+    });
+  }, []);
+
+  const handleSetFunctionExpansion = useCallback((key, mode) => {
+    setFunctionExpansionBySection((prev) => ({
+      ...prev,
+      [key]: mode
+    }));
+  }, []);
+
+  const handleNavigateFunction = useCallback((fn) => {
+    const romOff = Number(fn?.primaryUseSiteRomOff);
+    if (!Number.isInteger(romOff) || romOff < 0) return;
+    window.nesviz.memoryMapNavigate({ kind: 'rom', romOff: romOff >>> 0 });
+  }, []);
+
   const ramSections = useMemo(() => {
     const sizeBytes = Number(data?.ram?.sizeBytes) > 0 ? (data.ram.sizeBytes | 0) : 0;
     const occupiedRanges = Array.isArray(data?.ram?.occupiedRanges) ? data.ram.occupiedRanges : [];
+    const annotationRanges = Array.isArray(data?.ram?.annotationRanges) ? data.ram.annotationRanges : [];
     return [
       {
         key: 'zp',
         label: 'Zero Page',
         baseLabel: 0x0000,
-        rows: buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, 0x0000, 0x0100)
+        rows: buildRowsForSection(sizeBytes, occupiedRanges, annotationRanges, rowWidthBytes, 0x0000, 0x00ff)
       },
       {
         key: 'stack',
         label: 'Stack',
         baseLabel: 0x0100,
-        rows: buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, 0x0100, 0x0200)
+        rows: buildRowsForSection(sizeBytes, occupiedRanges, annotationRanges, rowWidthBytes, 0x0100, 0x01ff)
       },
       {
         key: 'ram',
         label: 'RAM (0200–07FF)',
         baseLabel: 0x0200,
-        rows: buildRowsForSection(sizeBytes, occupiedRanges, rowWidthBytes, 0x0200, sizeBytes)
+        rows: buildRowsForSection(sizeBytes, occupiedRanges, annotationRanges, rowWidthBytes, 0x0200, sizeBytes - 1)
       }
     ].filter((section) => Array.isArray(section.rows) && section.rows.length);
   }, [data, rowWidthBytes]);
 
   const prgRegions = useMemo(() => {
     const regions = Array.isArray(data?.prg?.regions) ? data.prg.regions : [];
-    return regions.map((region) => ({
-      ...region,
-      sizeBytes: (region.end | 0) - (region.start | 0),
-      rows: buildRows((region.end | 0) - (region.start | 0), region.occupiedRanges || [], rowWidthBytes)
-    }));
+    return regions.map((region) => {
+      const start = region.start | 0;
+      const end = region.end | 0;
+      const sizeBytes = Math.max(0, end - start + 1);
+      return {
+        ...region,
+        sizeBytes,
+        rows: buildRows(sizeBytes, region.occupiedRanges || [], region.annotationRanges || [], rowWidthBytes)
+      };
+    });
   }, [data, rowWidthBytes]);
 
   if (!data?.hasRom) {
@@ -201,7 +478,7 @@ export default function MemoryMapWindow() {
   const gridWidth = rowWidthBytes * cellSizePx;
 
   return (
-    <div className="memory-map-window">
+    <div className="memory-map-window" onClick={() => setAnnotationPopup(null)}>
       <div className="memory-map-header">
         <div className="memory-map-header-title">{data?.rom?.filename || 'Memory Map'}</div>
       </div>
@@ -221,6 +498,7 @@ export default function MemoryMapWindow() {
                     baseLabel={section.baseLabel}
                     rows={section.rows}
                     cellSizePx={cellSizePx}
+                    onAnnotationClick={handleAnnotationClick}
                   />
                 </div>
               ))}
@@ -235,13 +513,14 @@ export default function MemoryMapWindow() {
               {prgRegions.map((region) => (
                 <div key={`region:${region.index}`}>
                   <div className="memory-map-region-label">
-                    {fmtHex(region.start, 6)}–{fmtHex(region.end - 1, 6)}
+                    {fmtHex(region.start, 6)}–{fmtHex(region.end, 6)}
                   </div>
                   <MemorySection
                     title=""
                     baseLabel={region.start}
                     rows={region.rows}
                     cellSizePx={cellSizePx}
+                    onAnnotationClick={handleAnnotationClick}
                   />
                 </div>
               ))}
@@ -249,6 +528,14 @@ export default function MemoryMapWindow() {
           </section>
         </div>
       </div>
+
+      <AnnotationPopup
+        popup={annotationPopup}
+        annotationsById={annotationsById}
+        functionExpansionBySection={functionExpansionBySection}
+        onSetFunctionExpansion={handleSetFunctionExpansion}
+        onNavigateFunction={handleNavigateFunction}
+      />
     </div>
   );
 }

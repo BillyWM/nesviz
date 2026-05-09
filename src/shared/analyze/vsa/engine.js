@@ -5,10 +5,13 @@ import { bUnknown8, bConst8, bJoin, bAndImm, bOrImm, bXorImm, bShl1, bShr1 } fro
 import { enumerateTrackedByteValues } from './trackedValue.js';
 import { pUnknown, pConst8, pConst16, pAdd16, pAdd8, pAnd8, pOr8, pXor8, pShl1, pShr1, pReadRom8, pReadMem8, pPtr16FromZp, pJoin } from './prov.js';
 import { createObservationCollector } from './observations.js';
+import { branchTakenWhen, flagKnownValue, flagReadByBranchMnemonic, makeFlagSource, setFlag, writeAluFlags, writeBitFlags, writeCompareFlags, writeExplicitFlag, writeNZFromResult, writeShiftFlags } from './flags.js';
 import { clamp8 } from '../../utils/numberUtils.js';
 import { read8, read16le } from '../../utils/byteUtils.js';
 import { canonicalizeCpuAddr, normalizeCpuAddrSet } from '../../utils/addressUtils.js';
 import { normalizeRomOffsets, readRomCandidates } from '../../utils/romReadUtils.js';
+import { cpuToRomOffWithMapper } from '../map/cpuToRomOff.js';
+import { applyPpuAddrWrite, applyPpuCtrlWrite, applyPpuScrollWrite, advancePpuAddrAfterPpudata, classifyPpuDataWrite, observePpuCtrlWrite, resetPpuAddressLatch } from './ppuState.js';
 
 function isByteConst(abs) {
   return abs && abs.kind === 'const';
@@ -100,12 +103,19 @@ function emitValueFlow(observationCollector, hooks, payload, observationContext 
   maybeEmit(hooks, 'onValueFlow', enriched);
 }
 
-function observationContextForRawBlock(rawBlockId, blockContextIndex) {
-  if (!blockContextIndex || typeof rawBlockId !== 'string') return { rawBlockId, entryFamilies: [], functionIds: [] };
+function emitBranchFlagUse(observationCollector, hooks, payload, observationContext = null) {
+  const enriched = withObservationContext(payload, observationContext);
+  maybeRecord(observationCollector, 'recordBranchFlagUse', enriched);
+  maybeEmit(hooks, 'onBranchFlagUse', enriched);
+}
+
+function observationContextForRawBlock(rawBlockId, blockContextIndex, vsaRole = 'confirmed') {
+  if (!blockContextIndex || typeof rawBlockId !== 'string') return { rawBlockId, vsaRole, entryFamilies: [], functionIds: [] };
   const familySet = blockContextIndex.rawBlockFamiliesById?.get(rawBlockId) || new Set();
   const functionSet = blockContextIndex.rawBlockFunctionIdsById?.get(rawBlockId) || new Set();
   return {
     rawBlockId,
+    vsaRole,
     entryFamilies: Array.from(familySet).sort(),
     functionIds: Array.from(functionSet).sort()
   };
@@ -168,6 +178,22 @@ function enumerateTrackedValues(tracked, cap = 16) {
 
 function trackedValueEnumerationSource(tracked, cap = 16) {
   return enumerateTrackedByteValues(tracked, cap)?.source || null;
+}
+
+function normalizeIoRegisterAddr(addr) {
+  const a = addr & 0xffff;
+  if (a >= 0x2000 && a <= 0x3fff) return 0x2000 + ((a - 0x2000) & 0x0007);
+  return a;
+}
+
+function exactIoAddrFromAddrInfo(addrInfo) {
+  if (!addrInfo) return null;
+  const cpuAddrs = Array.isArray(addrInfo.cpuAddrs)
+    ? addrInfo.cpuAddrs
+    : (typeof addrInfo.cpuAddr === 'number' ? [addrInfo.cpuAddr] : []);
+  if (cpuAddrs.length !== 1) return null;
+  const canon = canonicalizeCpuAddr(cpuAddrs[0]);
+  return canon.space === 'io' ? normalizeIoRegisterAddr(canon.addr) : null;
 }
 
 const READ_ADDRESS_SET_CAP = 32;
@@ -503,6 +529,70 @@ function maybeOutcomeFlagsForImmCompare(abs, imm) {
   };
 }
 
+function regSubject(reg) {
+  return { kind: 'reg', reg };
+}
+
+function memSubject(canon = null) {
+  if (!canon?.space) return { kind: 'mem', space: null, addr: null };
+  return { kind: 'mem', space: canon.space, addr: canon.addr & 0xffff };
+}
+
+function aluSubject(reg = 'A') {
+  return { kind: 'aluResult', reg };
+}
+
+
+function writeRegisterResultFlags(state, line, reg, tracked) {
+  writeNZFromResult(state.flags, line, tracked, { subject: regSubject(reg) });
+}
+
+function writeMemoryResultFlags(state, line, canon, tracked) {
+  writeNZFromResult(state.flags, line, tracked, { subject: memSubject(canon) });
+}
+
+function writeUnknownMemoryResultFlags(state, line) {
+  writeNZFromResult(state.flags, line, makeTracked(), { subject: { kind: 'mem', space: null, addr: null } });
+}
+
+function branchRomTargetFromLine(line, mapper, fetchCtx) {
+  if (typeof line?.flow?.targetRomOff === 'number') return line.flow.targetRomOff >>> 0;
+  if (typeof line?.flow?.target !== 'number') return null;
+  const resolved = cpuToRomOffWithMapper(mapper, line.flow.target & 0xffff, fetchCtx || null);
+  return typeof resolved === 'number' ? (resolved >>> 0) : null;
+}
+
+function branchFallthroughRomFromLine(line, mapper, fetchCtx) {
+  if (typeof line?.flow?.fallthroughRomOff === 'number') return line.flow.fallthroughRomOff >>> 0;
+  if (typeof line?.flow?.fallthrough !== 'number') return null;
+  const resolved = cpuToRomOffWithMapper(mapper, line.flow.fallthrough & 0xffff, fetchCtx || null);
+  return typeof resolved === 'number' ? (resolved >>> 0) : null;
+}
+
+function recordBranchFlagUseForLine(state, line, ctx, observationCollector, hooks, observationContext) {
+  const flag = flagReadByBranchMnemonic(line?.mnemonic);
+  const takenWhen = branchTakenWhen(line?.mnemonic);
+  if (!flag || !(takenWhen === 0 || takenWhen === 1)) return;
+  const knownFlagValue = flagKnownValue(state.flags, flag);
+  emitBranchFlagUse(observationCollector, hooks, {
+    line,
+    branch: {
+      mnemonic: line.mnemonic,
+      flag,
+      takenWhen,
+      targetRomOff: branchRomTargetFromLine(line, ctx.mapper, ctx.fetchCtx || null),
+      fallthroughRomOff: branchFallthroughRomFromLine(line, ctx.mapper, ctx.fetchCtx || null),
+      targetCpuAddr: typeof line?.flow?.target === 'number' ? (line.flow.target & 0xffff) : null,
+      fallthroughCpuAddr: typeof line?.flow?.fallthrough === 'number' ? (line.flow.fallthrough & 0xffff) : null
+    },
+    source: state.flags?.[flag]?.source || null,
+    valueProof: {
+      knownFlagValue,
+      knownTaken: knownFlagValue == null ? null : knownFlagValue === takenWhen
+    }
+  }, observationContext);
+}
+
 function maybeEmitZpPtr16(observationCollector, hooks, state, zpAddr, curLine, observationContext = null) {
   const a = zpAddr & 0xff;
   const lo = state.zp.get(a) || makeTracked();
@@ -532,13 +622,11 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
   const m = line.mnemonic;
   const mode = normalizeMode(line.mode);
   const romOff = line.romOff >>> 0;
-  const observationContext = observationContextForRawBlock(options?.rawBlockId || null, options?.blockContextIndex || null);
+  const observationContext = observationContextForRawBlock(options?.rawBlockId || null, options?.blockContextIndex || null, options?.vsaRole === 'candidate' ? 'candidate' : 'confirmed');
 
-  if (options?.strictBranchAdjacencyFacts) {
-    const consumesCmp = (m === 'BEQ' || m === 'BNE' || m === 'BCC' || m === 'BCS');
-    const consumesNz = (m === 'BEQ' || m === 'BNE' || m === 'BMI' || m === 'BPL');
-    if (!(m === 'CMP' || m === 'CPX' || m === 'CPY') && !consumesCmp) state.lastCmp = null;
-    if (!consumesNz) state.lastNZ = null;
+  if (line?.flow?.type === 'branch') {
+    recordBranchFlagUseForLine(state, line, ctx, observationCollector, hooks, observationContext);
+    return;
   }
 
   if ((m === 'LDA' || m === 'LDX' || m === 'LDY') && mode === 'imm') {
@@ -550,94 +638,63 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     const regName = m === 'LDA' ? 'A' : m === 'LDX' ? 'X' : 'Y';
     setReg(state, regName, tracked);
     emitValueFlow(observationCollector, hooks, { line, opKind: 'immLoad', dstReg: regName, imm, value: tracked, prov, inputProvs: [] }, observationContext);
-    state.lastNZ = { reg: regName };
+    writeRegisterResultFlags(state, line, regName, tracked);
     return;
   }
 
-  if (m === 'TAX') {
-    const a = getReg(state, 'A');
-    const tracked = { ...a };
-    setReg(state, 'X', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'X', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'X' };
+  if (m === 'TAX' || m === 'TAY' || m === 'TXA' || m === 'TYA') {
+    const srcReg = (m === 'TAX' || m === 'TAY') ? 'A' : (m === 'TXA' ? 'X' : 'Y');
+    const dstReg = (m === 'TAX' || m === 'TXA') ? (m === 'TAX' ? 'X' : 'A') : (m === 'TAY' ? 'Y' : 'A');
+    const src = getReg(state, srcReg);
+    const tracked = { ...src };
+    setReg(state, dstReg, tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg, srcRegs: [srcReg], value: tracked, prov: tracked.prov, inputProvs: [src.prov] }, observationContext);
+    writeRegisterResultFlags(state, line, dstReg, tracked);
     return;
   }
-  if (m === 'TAY') {
-    const a = getReg(state, 'A');
-    const tracked = { ...a };
-    setReg(state, 'Y', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'Y', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'Y' };
-    return;
-  }
-  if (m === 'TXA') {
-    const x = getReg(state, 'X');
-    const tracked = { ...x };
-    setReg(state, 'A', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'A', srcRegs: ['X'], value: tracked, prov: tracked.prov, inputProvs: [x.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    return;
-  }
-  if (m === 'TYA') {
-    const y = getReg(state, 'Y');
-    const tracked = { ...y };
-    setReg(state, 'A', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'regTransfer', dstReg: 'A', srcRegs: ['Y'], value: tracked, prov: tracked.prov, inputProvs: [y.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    return;
-  }
+
   if (m === 'TSX') {
-    setReg(state, 'X', makeTracked());
-    state.lastNZ = { reg: 'X' };
+    const tracked = makeTracked();
+    setReg(state, 'X', tracked);
+    writeRegisterResultFlags(state, line, 'X', tracked);
     return;
   }
 
   if (m === 'CLC') {
-    state.C = 0;
+    writeExplicitFlag(state.flags, line, 'C', 0, 'explicitClear');
     return;
   }
   if (m === 'SEC') {
-    state.C = 1;
+    writeExplicitFlag(state.flags, line, 'C', 1, 'explicitSet');
+    return;
+  }
+  if (m === 'CLV') {
+    writeExplicitFlag(state.flags, line, 'V', 0, 'explicitClear');
     return;
   }
 
-  if (m === 'AND' && mode === 'imm') {
+  if ((m === 'AND' || m === 'ORA' || m === 'EOR') && mode === 'imm') {
     const imm = read8(prgBytes, romOff, 1);
     const a = getReg(state, 'A');
-    const tracked = trackedWith(vAnd8(a.abs, imm), bAndImm(a.bits, imm), pAnd8(a.prov, imm), a.spanStartRomOff);
+    const abs = m === 'AND' ? vAnd8(a.abs, imm) : (m === 'ORA' ? vOr8(a.abs, imm) : vXor8(a.abs, imm));
+    const bits = m === 'AND' ? bAndImm(a.bits, imm) : (m === 'ORA' ? bOrImm(a.bits, imm) : bXorImm(a.bits, imm));
+    const prov = m === 'AND' ? pAnd8(a.prov, imm) : (m === 'ORA' ? pOr8(a.prov, imm) : pXor8(a.prov, imm));
+    const tracked = trackedWith(abs, bits, prov, a.spanStartRomOff);
     setReg(state, 'A', tracked);
     emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    return;
-  }
-  if (m === 'ORA' && mode === 'imm') {
-    const imm = read8(prgBytes, romOff, 1);
-    const a = getReg(state, 'A');
-    const tracked = trackedWith(vOr8(a.abs, imm), bOrImm(a.bits, imm), pOr8(a.prov, imm), a.spanStartRomOff);
-    setReg(state, 'A', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    return;
-  }
-  if (m === 'EOR' && mode === 'imm') {
-    const imm = read8(prgBytes, romOff, 1);
-    const a = getReg(state, 'A');
-    const tracked = trackedWith(vXor8(a.abs, imm), bXorImm(a.bits, imm), pXor8(a.prov, imm), a.spanStartRomOff);
-    setReg(state, 'A', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
+    writeRegisterResultFlags(state, line, 'A', tracked);
     return;
   }
 
-  if (m === 'ADC' && mode === 'imm') {
+  if ((m === 'ADC' || m === 'SBC') && mode === 'imm') {
     const imm = read8(prgBytes, romOff, 1);
     const a = getReg(state, 'A');
-    const carryIn = (state.C === 0 || state.C === 1) ? state.C : null;
+    const carryIn = flagKnownValue(state.flags, 'C');
 
     let abs = vUnknown();
     let bits = bUnknown8();
     let prov = pUnknown();
-    if (carryIn != null) {
+    if (m === 'ADC' && carryIn != null) {
       const delta = (imm + carryIn) | 0;
       abs = vAdd8(a.abs, delta);
       prov = pAdd8(a.prov, delta);
@@ -651,27 +708,42 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     const tracked = trackedWith(abs, bits, prov, a.spanStartRomOff);
     setReg(state, 'A', tracked);
     emitValueFlow(observationCollector, hooks, { line, opKind: 'immTransform', dstReg: 'A', srcRegs: ['A'], imm, value: tracked, prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    state.C = null;
+    writeAluFlags(state.flags, line, tracked, { subject: aluSubject('A') });
     return;
   }
 
-  if (m === 'ASL' && mode === 'acc') {
+  if ((m === 'ASL' || m === 'LSR' || m === 'ROL' || m === 'ROR') && mode === 'acc') {
     const a = getReg(state, 'A');
-    const tracked = trackedWith(vShl1(a.abs), bShl1(a.bits), pShl1(a.prov), a.spanStartRomOff);
+    const direction = (m === 'ASL' || m === 'ROL') ? 'left' : 'right';
+    const rotate = m === 'ROL' || m === 'ROR';
+    let tracked;
+    if (m === 'ASL') tracked = trackedWith(vShl1(a.abs), bShl1(a.bits), pShl1(a.prov), a.spanStartRomOff);
+    else if (m === 'LSR') tracked = trackedWith(vShr1(a.abs), bShr1(a.bits), pShr1(a.prov), a.spanStartRomOff);
+    else tracked = trackedWith(vUnknown(), bUnknown8(), pUnknown(), a.spanStartRomOff);
     setReg(state, 'A', tracked);
     emitValueFlow(observationCollector, hooks, { line, opKind: 'accTransform', dstReg: 'A', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    state.C = null;
+    writeShiftFlags(state.flags, line, a, tracked, { subject: regSubject('A'), direction, rotate });
     return;
   }
-  if (m === 'LSR' && mode === 'acc') {
-    const a = getReg(state, 'A');
-    const tracked = trackedWith(vShr1(a.abs), bShr1(a.bits), pShr1(a.prov), a.spanStartRomOff);
-    setReg(state, 'A', tracked);
-    emitValueFlow(observationCollector, hooks, { line, opKind: 'accTransform', dstReg: 'A', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
-    state.lastNZ = { reg: 'A' };
-    state.C = null;
+
+  if ((m === 'ASL' || m === 'LSR' || m === 'ROL' || m === 'ROR') && mode !== 'imm' && mode !== 'acc') {
+    const addrInfo = resolveExactAddressForLine(state, line, ctx);
+    if (!addrInfo) {
+      writeUnknownMemoryResultFlags(state, line);
+      setFlag(state.flags, 'C', null, makeFlagSource(line, { effect: (m === 'ASL' || m === 'ROL') ? 'carryOutBit7' : 'carryOutBit0', subject: { kind: 'mem', space: null, addr: null } }));
+      return;
+    }
+    const canon = canonicalizeCpuAddr(addrInfo.cpuAddr);
+    const cell = getMem8(state, canon);
+    const direction = (m === 'ASL' || m === 'ROL') ? 'left' : 'right';
+    const rotate = m === 'ROL' || m === 'ROR';
+    let tracked;
+    if (m === 'ASL') tracked = trackedWith(vShl1(cell.abs), bShl1(cell.bits), pShl1(cell.prov), cell.spanStartRomOff);
+    else if (m === 'LSR') tracked = trackedWith(vShr1(cell.abs), bShr1(cell.bits), pShr1(cell.prov), cell.spanStartRomOff);
+    else tracked = trackedWith(vUnknown(), bUnknown8(), pUnknown(), cell.spanStartRomOff);
+    if (canon.space === 'zp' || canon.space === 'ram' || canon.space === 'prgram') setMem8(state, canon, tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'memTransform', dst: canon, value: tracked, prov: tracked.prov, inputProvs: [cell.prov] }, observationContext);
+    writeShiftFlags(state.flags, line, cell, tracked, { subject: memSubject(canon), direction, rotate });
     return;
   }
 
@@ -689,14 +761,14 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     const tracked = trackedWith(abs, bits, pAdd8(base.prov, delta), base.spanStartRomOff);
     setReg(state, reg, tracked);
     emitValueFlow(observationCollector, hooks, { line, opKind: 'regDelta', dstReg: reg, srcRegs: [reg], imm: delta & 0xff, value: tracked, prov: tracked.prov, inputProvs: [base.prov] }, observationContext);
-    state.lastNZ = { reg };
+    writeRegisterResultFlags(state, line, reg, tracked);
     return;
   }
 
   if ((m === 'INC' || m === 'DEC') && mode !== 'imm' && mode !== 'acc') {
     const addrInfo = resolveExactAddressForLine(state, line, ctx);
     if (!addrInfo) {
-      state.lastNZ = null;
+      writeUnknownMemoryResultFlags(state, line);
       return;
     }
     const canon = canonicalizeCpuAddr(addrInfo.cpuAddr);
@@ -714,7 +786,10 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       const tracked = trackedWith(abs, bits, pAdd8(cell.prov, delta), spanStart);
       setMem8(state, canon, tracked);
       emitValueFlow(observationCollector, hooks, { line, opKind: 'memDelta', dst: canon, imm: delta & 0xff, value: tracked, prov: tracked.prov, inputProvs: [cell.prov] }, observationContext);
+      writeMemoryResultFlags(state, line, canon, tracked);
+      return;
     }
+    writeUnknownMemoryResultFlags(state, line);
     return;
   }
 
@@ -728,7 +803,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       const indexedRom = tryReadIndexedRom(prgBytes, mapper, ctx.fetchCtx || null, baseCpuAddr, idxTracked, idxReg, romOff);
       if (indexedRom) {
         setReg(state, regName, indexedRom.tracked);
-        state.lastNZ = { reg: regName };
+        writeRegisterResultFlags(state, line, regName, indexedRom.tracked);
         const src = {
           space: 'rom',
           addr: (indexedRom.exactCpuAddr != null ? indexedRom.exactCpuAddr : baseCpuAddr) & 0xffff,
@@ -763,10 +838,13 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     let addrInfo = resolveExactAddressForLine(state, line, ctx);
     if (!addrInfo) addrInfo = resolveAddressSetForLine(state, line, ctx, READ_ADDRESS_SET_CAP);
     if (!addrInfo) {
-      setReg(state, regName, makeTracked());
-      state.lastNZ = { reg: regName };
+      const tracked = makeTracked();
+      setReg(state, regName, tracked);
+      writeRegisterResultFlags(state, line, regName, tracked);
       return;
     }
+
+    if (exactIoAddrFromAddrInfo(addrInfo) === 0x2002) resetPpuAddressLatch(state.ppu);
 
     const cpuAddrs = normalizeCpuAddrSet(addrInfo.cpuAddrs || [addrInfo.cpuAddr], 16) || [];
     const canon = cpuAddrs.length === 1 ? canonicalizeCpuAddr(cpuAddrs[0]) : null;
@@ -778,7 +856,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       if (romRead.kind !== 'unknown') {
         const tracked = trackedFromRomRead(romRead, prov, romOff);
         setReg(state, regName, tracked);
-        state.lastNZ = { reg: regName };
+        writeRegisterResultFlags(state, line, regName, tracked);
         emitRead(observationCollector, hooks, {
           line,
           dstReg: regName,
@@ -804,7 +882,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     if (memRead) {
       const tracked = memRead.tracked;
       setReg(state, regName, tracked);
-      state.lastNZ = { reg: regName };
+      writeRegisterResultFlags(state, line, regName, tracked);
       emitRead(observationCollector, hooks, {
         line,
         dstReg: regName,
@@ -823,8 +901,27 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       return;
     }
 
-    setReg(state, regName, makeTracked());
-    state.lastNZ = { reg: regName };
+    const tracked = makeTracked();
+    setReg(state, regName, tracked);
+    writeRegisterResultFlags(state, line, regName, tracked);
+    return;
+  }
+
+  if ((m === 'AND' || m === 'ORA' || m === 'EOR') && mode !== 'imm') {
+    const a = getReg(state, 'A');
+    const tracked = makeTracked();
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'memTransform', dstReg: 'A', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
+    writeRegisterResultFlags(state, line, 'A', tracked);
+    return;
+  }
+
+  if ((m === 'ADC' || m === 'SBC') && mode !== 'imm') {
+    const a = getReg(state, 'A');
+    const tracked = makeTracked();
+    setReg(state, 'A', tracked);
+    emitValueFlow(observationCollector, hooks, { line, opKind: 'memTransform', dstReg: 'A', srcRegs: ['A'], value: tracked, prov: tracked.prov, inputProvs: [a.prov] }, observationContext);
+    writeAluFlags(state.flags, line, tracked, { subject: aluSubject('A') });
     return;
   }
 
@@ -834,6 +931,14 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     const canon = canonicalizeCpuAddr(addrInfo.cpuAddr);
     const srcReg = m === 'STA' ? 'A' : m === 'STX' ? 'X' : 'Y';
     const v = getReg(state, srcReg);
+
+    let ppuDest = null;
+    let ppuCtrl = null;
+    if (canon.space === 'io') {
+      const ioAddr = normalizeIoRegisterAddr(canon.addr);
+      if (ioAddr === 0x2000) ppuCtrl = observePpuCtrlWrite(state.ppu, v);
+      if (ioAddr === 0x2007) ppuDest = classifyPpuDataWrite(state.ppu);
+    }
 
     if (canon.space === 'zp' || canon.space === 'ram' || canon.space === 'prgram') {
       setMem8(state, canon, { ...v });
@@ -851,8 +956,18 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
       dst: { space: canon.space, addr: canon.addr & 0xffff },
       value: v,
       prov: v.prov,
-      addrInfo
+      addrInfo,
+      ppuDest,
+      ppuCtrl
     }, observationContext);
+
+    if (canon.space === 'io') {
+      const ioAddr = normalizeIoRegisterAddr(canon.addr);
+      if (ioAddr === 0x2000) applyPpuCtrlWrite(state.ppu, v);
+      else if (ioAddr === 0x2005) applyPpuScrollWrite(state.ppu);
+      else if (ioAddr === 0x2006) applyPpuAddrWrite(state.ppu, v);
+      else if (ioAddr === 0x2007) advancePpuAddrAfterPpudata(state.ppu);
+    }
     return;
   }
 
@@ -862,15 +977,14 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
 
     if (mode === 'imm') {
       const imm = read8(prgBytes, romOff, 1);
-      state.lastCmp = { reg, imm };
-      state.lastNZ = null;
-      state.C = null;
+      const rhsValue = trackedWith(vConst8(imm), bConst8(imm), pConst8(imm), romOff);
+      writeCompareFlags(state.flags, line, lhs, rhsValue, { reg, rhs: { kind: 'imm', imm: imm & 0xff } });
       emitCompare(observationCollector, hooks, {
         line,
         reg,
         lhs,
         rhs: { kind: 'imm', imm: imm & 0xff },
-        rhsValue: trackedWith(vConst8(imm), bConst8(imm), pConst8(imm), romOff),
+        rhsValue,
         outcomes: maybeOutcomeFlagsForImmCompare(lhs.abs, imm),
         prov: lhs.prov,
         addrInfo: null
@@ -881,9 +995,7 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     let addrInfo = resolveExactAddressForLine(state, line, ctx);
     if (!addrInfo) addrInfo = resolveAddressSetForLine(state, line, ctx, READ_ADDRESS_SET_CAP);
     if (!addrInfo) {
-      state.lastCmp = null;
-      state.lastNZ = null;
-      state.C = null;
+      writeCompareFlags(state.flags, line, lhs, makeTracked(), { reg, rhs: { kind: 'unknown' } });
       return;
     }
 
@@ -914,32 +1026,29 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     }
 
     if (!rhsTracked) {
-      state.lastCmp = null;
-      state.lastNZ = null;
-      state.C = null;
+      writeCompareFlags(state.flags, line, lhs, makeTracked(), { reg, rhs: { kind: 'unknown' } });
       return;
     }
 
-    state.lastCmp = (rhsConst != null) ? { reg, imm: rhsConst } : null;
-    state.lastNZ = null;
-    state.C = null;
+    const rhs = {
+      kind: 'mem',
+      src: {
+        space: canon ? canon.space : (allCanon.every((c) => c.space === 'rom') ? 'rom' : 'memset'),
+        addr: canon ? (canon.addr & 0xffff) : null,
+        addrSet: cpuAddrs.length > 1 ? cpuAddrs : null,
+        romOff: comparePhysicalRom?.kind === 'exact' ? (comparePhysicalRom.romOffsets?.[0] ?? null) : null,
+        physicalRom: comparePhysicalRom,
+        ptrZp: typeof addrInfo.ptrZp === 'number' ? (addrInfo.ptrZp & 0xff) : null,
+        indexSource: addrInfo.indexSource || null,
+        baseCpuAddr: typeof addrInfo.baseCpuAddr === 'number' ? (addrInfo.baseCpuAddr & 0xffff) : null
+      }
+    };
+    writeCompareFlags(state.flags, line, lhs, rhsTracked, { reg, rhs: rhsConst != null ? { kind: 'imm', imm: rhsConst } : rhs });
     emitCompare(observationCollector, hooks, {
       line,
       reg,
       lhs,
-      rhs: {
-        kind: 'mem',
-        src: {
-          space: canon ? canon.space : (allCanon.every((c) => c.space === 'rom') ? 'rom' : 'memset'),
-          addr: canon ? (canon.addr & 0xffff) : null,
-          addrSet: cpuAddrs.length > 1 ? cpuAddrs : null,
-          romOff: comparePhysicalRom?.kind === 'exact' ? (comparePhysicalRom.romOffsets?.[0] ?? null) : null,
-          physicalRom: comparePhysicalRom,
-          ptrZp: typeof addrInfo.ptrZp === 'number' ? (addrInfo.ptrZp & 0xff) : null,
-          indexSource: addrInfo.indexSource || null,
-          baseCpuAddr: typeof addrInfo.baseCpuAddr === 'number' ? (addrInfo.baseCpuAddr & 0xffff) : null
-        }
-      },
+      rhs,
       rhsValue: rhsTracked,
       outcomes: (rhsConst != null) ? maybeOutcomeFlagsForImmCompare(lhs.abs, rhsConst) : null,
       prov: lhs.prov,
@@ -948,15 +1057,55 @@ function applyInstruction(state, line, ctx, observationCollector, hooks, options
     return;
   }
 
-  if (m === 'LDA') setReg(state, 'A', makeTracked());
-  if (m === 'LDX') setReg(state, 'X', makeTracked());
-  if (m === 'LDY') setReg(state, 'Y', makeTracked());
+  if (m === 'BIT') {
+    const a = getReg(state, 'A');
+    let addrInfo = resolveExactAddressForLine(state, line, ctx);
+    if (!addrInfo) addrInfo = resolveAddressSetForLine(state, line, ctx, READ_ADDRESS_SET_CAP);
+    let operand = null;
+    let subject = { kind: 'mem', space: null, addr: null };
+    if (addrInfo) {
+      const cpuAddrs = normalizeCpuAddrSet(addrInfo.cpuAddrs || [addrInfo.cpuAddr], 16) || [];
+      const canon = cpuAddrs.length === 1 ? canonicalizeCpuAddr(cpuAddrs[0]) : null;
+      const allCanon = canon ? [canon] : cpuAddrs.map((cpuAddr) => canonicalizeCpuAddr(cpuAddr));
+      subject = canon ? memSubject(canon) : { kind: 'memset' };
+      if (allCanon.length && allCanon.every((c) => c.space === 'rom')) {
+        const romRead = readRomCandidatesForAddrSet(prgBytes, mapper, cpuAddrs, ctx.fetchCtx || null, 32);
+        if (romRead.kind !== 'unknown') operand = trackedFromRomRead(romRead, pReadRom8(addrInfo.addrProv || pConst16((cpuAddrs[0] || 0) & 0xffff), addrInfo.indexSource || null), romOff);
+      }
+      if (!operand) {
+        const memRead = readTrackedFromAddressSet(state, addrInfo, romOff);
+        if (memRead) operand = memRead.tracked;
+      }
+    }
+    writeBitFlags(state.flags, line, a, operand || makeTracked(), { subject });
+    return;
+  }
+
+  if (m === 'PLA') {
+    const tracked = makeTracked();
+    setReg(state, 'A', tracked);
+    writeRegisterResultFlags(state, line, 'A', tracked);
+    return;
+  }
+
+  if (m === 'PLP' || m === 'RTI') {
+    for (const flag of ['N', 'V', 'Z', 'C']) {
+      setFlag(state.flags, flag, null, makeFlagSource(line, { effect: 'statusRestore', subject: { kind: 'status', flag } }));
+    }
+    return;
+  }
+
+  if (m === 'LDA' || m === 'LDX' || m === 'LDY') {
+    const reg = m === 'LDA' ? 'A' : m === 'LDX' ? 'X' : 'Y';
+    const tracked = makeTracked();
+    setReg(state, reg, tracked);
+    writeRegisterResultFlags(state, line, reg, tracked);
+  }
 }
 
 async function yieldToEventLoop() {
   await new Promise((resolve) => {
-    if (typeof setImmediate === 'function') setImmediate(resolve);
-    else setTimeout(resolve, 0);
+    setImmediate(resolve);
   });
 }
 
@@ -974,7 +1123,8 @@ export async function runVsaEngine({
   blockContextIndex = null,
   yieldEveryMs = 0,
   onProgress = null,
-  progressEveryMs = 0
+  progressEveryMs = 0,
+  blockRolesByRawBlockId = null
 }) {
   const byId = new Map(blocks.map((b) => [b.id, b]));
   const succs = new Map();
@@ -1055,12 +1205,13 @@ export async function runVsaEngine({
       }
 
       const blockFetchCtx = block.fetchCtx || mapper.initialFetchCtx();
-      maybeEmit(hooks, 'onInstructionStart', { line, rawBlockId: bid, state: cur, ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
+      const blockVsaRole = blockRolesByRawBlockId?.get(bid) || (block?.vsaRole === 'candidate' || block?.confidence === 'probable' ? 'candidate' : 'confirmed');
+      maybeEmit(hooks, 'onInstructionStart', { line, rawBlockId: bid, vsaRole: blockVsaRole, state: cur, ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
       const wantsInstructionEnd = typeof hooks?.onInstructionEnd === 'function';
       const beforeState = wantsInstructionEnd ? cloneState(cur) : null;
-      applyInstruction(cur, line, { prgBytes, mapper, fetchCtx: blockFetchCtx }, observationCollector, hooks, { strictBranchAdjacencyFacts, rawBlockId: bid, blockContextIndex });
+      applyInstruction(cur, line, { prgBytes, mapper, fetchCtx: blockFetchCtx }, observationCollector, hooks, { strictBranchAdjacencyFacts, rawBlockId: bid, blockContextIndex, vsaRole: blockVsaRole });
       if (wantsInstructionEnd) {
-        hooks.onInstructionEnd({ line, rawBlockId: bid, beforeState, afterState: cloneState(cur), ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
+        hooks.onInstructionEnd({ line, rawBlockId: bid, vsaRole: blockVsaRole, beforeState, afterState: cloneState(cur), ctx: { prgBytes, mapper, fetchCtx: blockFetchCtx } });
       }
       if (line.flow.type === 'branch') branchMnemonic = line.mnemonic;
     }

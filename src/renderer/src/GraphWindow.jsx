@@ -281,7 +281,7 @@ export default function GraphWindow() {
     const edges = Array.from(visibleEdgesByIdRef.current.values())
     if (!nodes.length && !edges.length) return
 
-    void window.nesviz?.saveGraphLayoutCache?.({
+    void window.nesviz.saveGraphLayoutCache({
       nodes,
       edges,
       meta: {
@@ -469,7 +469,7 @@ export default function GraphWindow() {
     setIsProgressOverlayVisible(true)
 
     try {
-      const res = await window.nesviz?.getGraphData?.()
+      const res = await window.nesviz.getGraphData()
       if (requestIdRef.current !== requestId) return
 
       if (!res?.ok) {
@@ -497,7 +497,7 @@ export default function GraphWindow() {
       const nextAnalysisEdges = Array.isArray(res.edges) ? res.edges : []
       const nextMeasurements = buildDeterministicMeasurements(nextAnalysisNodes)
 
-      const cachedLayoutRes = await window.nesviz?.getGraphLayoutCache?.()
+      const cachedLayoutRes = await window.nesviz.getGraphLayoutCache()
       if (requestIdRef.current !== requestId) return
       if (cachedLayoutRes?.ok && cachedLayoutRes?.hasCache && cachedLayoutRes?.layout) {
         const cachedNodes = Array.isArray(cachedLayoutRes.layout?.nodes) ? cachedLayoutRes.layout.nodes : []
@@ -638,7 +638,6 @@ export default function GraphWindow() {
   }, [reload])
 
   useEffect(() => {
-    if (!window?.nesviz?.onGraphDataChanged) return undefined
     return window.nesviz.onGraphDataChanged(() => {
       if (buildInFlightRef.current) {
         queuedReloadRef.current = true
@@ -666,8 +665,8 @@ export default function GraphWindow() {
       if (!isZoomIn && !isZoomOut) return
 
       event.preventDefault()
-      if (isZoomIn) reactFlowRef.current?.zoomIn?.({ duration: 120 })
-      if (isZoomOut) reactFlowRef.current?.zoomOut?.({ duration: 120 })
+      if (isZoomIn) reactFlowRef.current?.zoomIn({ duration: 120 })
+      if (isZoomOut) reactFlowRef.current?.zoomOut({ duration: 120 })
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -771,7 +770,7 @@ export default function GraphWindow() {
   }, [rawEdges, highlightState, isPanning])
 
   const handleNodeClick = useCallback((event, node) => {
-    event?.preventDefault?.()
+    event.preventDefault()
     setActiveBlockId(node?.id || null)
   }, [])
 
@@ -788,7 +787,7 @@ export default function GraphWindow() {
   }, [])
 
   const handleNodeDoubleClick = useCallback((event, node) => {
-    event?.preventDefault?.()
+    event.preventDefault()
     const nodeId = node?.id || null
     if (!nodeId) return
     setActiveBlockId(nodeId)

@@ -1,5 +1,6 @@
 import { runConstantRecognizersForBlock } from '../recognize/constantRecognizers.js';
 import { runWaitLoopRecognizersForBlock } from '../recognize/waitLoopRecognizers.js';
+import { runPpuRecognizersForBlock } from '../recognize/ppuRecognizers.js';
 
 export function collectPointsOfInterestFromBlockRecognizers(analysis) {
   const blocks = Array.isArray(analysis?.blocks) ? analysis.blocks : [];
@@ -9,7 +10,8 @@ export function collectPointsOfInterestFromBlockRecognizers(analysis) {
   for (const block of blocks) {
     const blockPois = [
       ...(runConstantRecognizersForBlock(block) || []),
-      ...(runWaitLoopRecognizersForBlock(block) || [])
+      ...(runWaitLoopRecognizersForBlock(block) || []),
+      ...(runPpuRecognizersForBlock(block) || [])
     ];
     for (const poi of blockPois) {
       if (!poi) continue;

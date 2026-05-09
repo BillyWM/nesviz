@@ -106,6 +106,17 @@ function formatObservation(obs) {
       const value = typeof obs.value16 === 'number' ? ` -> $${fmtHex(obs.value16, 4)}` : '';
       return { kind: 'zpPtr16', text: `zpPtr16 ${zp}${value}`, details };
     }
+    case 'branchFlagUse': {
+      const branch = obs.branch || {};
+      const source = obs.source || null;
+      const srcRom = typeof source?.romOff === 'number' ? `@$${fmtHex(source.romOff, 6)}` : '';
+      const srcMnemonic = source?.mnemonic || 'unknown';
+      const effect = source?.effect ? `/${source.effect}` : '';
+      const subject = source?.subject?.reg ? ` ${source.subject.reg}` : '';
+      const flag = branch.flag || '?';
+      const takenWhen = branch.takenWhen === 0 || branch.takenWhen === 1 ? `=${branch.takenWhen}` : '';
+      return { kind: 'branchFlagUse', text: `branchFlagUse ${branch.mnemonic || '?'} reads ${flag}${takenWhen} from ${srcMnemonic}${effect}${subject}${srcRom}`, details };
+    }
     default:
       return { kind: obs?.kind || 'unknown', text: String(obs?.kind || 'unknown'), details };
   }

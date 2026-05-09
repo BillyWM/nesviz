@@ -24,6 +24,7 @@ export function BlockStack({
   gapBytesLoadingByKey,
   analysisDebug,
   showDebugInfo = false,
+  showNamedConstants = true,
   apiRef
 }) {
   const [expandedById, setExpandedById] = useState({});
@@ -455,6 +456,8 @@ export function BlockStack({
                 onNavigateToRomOff={onNavigateToRomOff}
                 labelsByRomOff={labelsByRomOff}
                 labelsByAddr={labelsByAddr}
+                showDebugInfo={showDebugInfo}
+                showNamedConstants={showNamedConstants}
                 onHoverLine={onHoverLine}
                 onContextMenuLine={onContextMenuLine}
                 onContextMenuBlock={onContextMenuBlock}

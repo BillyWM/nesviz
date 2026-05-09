@@ -17,7 +17,7 @@ export default function PreferencesWindow() {
   const reload = useCallback(async () => {
     setStatus('Loading…');
     try {
-      const res = await window.nesviz?.getPreferencesAnalysisCacheStats?.();
+      const res = await window.nesviz.getPreferencesAnalysisCacheStats();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load cache stats');
         return;
@@ -37,7 +37,7 @@ export default function PreferencesWindow() {
     setBusy(true);
     setStatus('Clearing…');
     try {
-      const res = await window.nesviz?.clearPreferencesAnalysisCache?.();
+      const res = await window.nesviz.clearPreferencesAnalysisCache();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to clear analysis cache');
         return;

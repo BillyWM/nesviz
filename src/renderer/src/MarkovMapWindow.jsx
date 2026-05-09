@@ -122,7 +122,7 @@ export default function MarkovMapWindow() {
   const reload = useCallback(async () => {
     setStatus('');
     try {
-      const res = await window.nesviz?.getMarkovMapData?.({ corpus, displayedCodeType, family, order, metric });
+      const res = await window.nesviz.getMarkovMapData({ corpus, displayedCodeType, family, order, metric });
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load Markov map');
         return;
@@ -138,7 +138,6 @@ export default function MarkovMapWindow() {
   }, [reload]);
 
   useEffect(() => {
-    if (!window?.nesviz?.onMarkovMapDataChanged) return undefined;
     return window.nesviz.onMarkovMapDataChanged(() => {
       reload();
     });

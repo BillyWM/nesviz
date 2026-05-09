@@ -94,6 +94,12 @@ function shallowObsRef(obs) {
   if (obs.kind === 'store8') {
     out.srcReg = obs.srcReg || null;
     out.dst = obs.dst ? { space: obs.dst.space, addr: obs.dst.addr & 0xffff, name: (obs.dst.space === 'io') ? ioName(obs.dst.addr) : null } : null;
+    out.ppuDest = obs.ppuDest ? {
+      class: obs.ppuDest.class || 'unknown',
+      candidates: Array.isArray(obs.ppuDest.candidates) ? [...obs.ppuDest.candidates] : [],
+      normalizedCandidates: Array.isArray(obs.ppuDest.normalizedCandidates) ? [...obs.ppuDest.normalizedCandidates] : []
+    } : null;
+    out.ppuCtrl = obs.ppuCtrl ? normalizePpuCtrl(obs.ppuCtrl) : null;
   }
   if (obs.kind === 'valueFlow8') {
     out.mnemonic = obs.mnemonic || null;
@@ -415,6 +421,126 @@ function buildHardwareTrace({ rootObs, observationsById, readDefLinksByReadId, o
   }
 }
 
+function normalizePpuDest(ppuDest) {
+  const cls = ppuDest?.class === 'palettes' || ppuDest?.class === 'attributes' ? ppuDest.class : 'unknown';
+  if (cls === 'unknown') return null;
+  return {
+    class: cls,
+    candidates: Array.isArray(ppuDest.candidates) ? [...ppuDest.candidates].map((value) => value & 0x3fff).sort((a, b) => a - b) : [],
+    normalizedCandidates: Array.isArray(ppuDest.normalizedCandidates) ? [...ppuDest.normalizedCandidates].map((value) => value & 0x3fff).sort((a, b) => a - b) : []
+  };
+}
+
+const PPUCTRL_FIELDS = [
+  'nametableBase',
+  'vramIncrement',
+  'spritePatternTable',
+  'backgroundPatternTable',
+  'spriteSize',
+  'masterSlave',
+  'nmiEnabled'
+];
+
+function normalizePpuCtrlDecoded(decoded) {
+  return {
+    nametableBase: typeof decoded?.nametableBase === 'number' ? (decoded.nametableBase & 0x3fff) : null,
+    vramIncrement: decoded?.vramIncrement === 1 || decoded?.vramIncrement === 32 ? decoded.vramIncrement : null,
+    spritePatternTable: decoded?.spritePatternTable === 0 || decoded?.spritePatternTable === 0x1000 ? decoded.spritePatternTable : null,
+    backgroundPatternTable: decoded?.backgroundPatternTable === 0 || decoded?.backgroundPatternTable === 0x1000 ? decoded.backgroundPatternTable : null,
+    spriteSize: decoded?.spriteSize === '8x8' || decoded?.spriteSize === '8x16' ? decoded.spriteSize : null,
+    masterSlave: decoded?.masterSlave === 0 || decoded?.masterSlave === 1 ? decoded.masterSlave : null,
+    nmiEnabled: decoded?.nmiEnabled === true || decoded?.nmiEnabled === false ? decoded.nmiEnabled : null
+  };
+}
+
+function normalizePpuCtrlChanged(changed) {
+  const out = {};
+  for (const field of PPUCTRL_FIELDS) {
+    out[field] = changed?.[field] === true ? true : changed?.[field] === false ? false : null;
+  }
+  return out;
+}
+
+function ppuCtrlHasKnownField(ppuCtrl) {
+  const decoded = ppuCtrl?.decoded || {};
+  return PPUCTRL_FIELDS.some((field) => decoded[field] != null);
+}
+
+function normalizePpuCtrl(ppuCtrl) {
+  if (!ppuCtrl) return null;
+  const out = {
+    candidates: Array.isArray(ppuCtrl.candidates) ? [...ppuCtrl.candidates].map((value) => value & 0xff).sort((a, b) => a - b) : [],
+    candidateSource: typeof ppuCtrl.candidateSource === 'string' ? ppuCtrl.candidateSource : null,
+    knownMask: (ppuCtrl.knownMask ?? 0) & 0xff,
+    knownValue: (ppuCtrl.knownValue ?? 0) & 0xff,
+    decoded: normalizePpuCtrlDecoded(ppuCtrl.decoded),
+    previousDecoded: normalizePpuCtrlDecoded(ppuCtrl.previousDecoded),
+    changed: normalizePpuCtrlChanged(ppuCtrl.changed)
+  };
+  return out.candidates.length || ppuCtrlHasKnownField(out) ? out : null;
+}
+
+function buildPpuCtrlWrites(observationsById) {
+  const out = [];
+  for (const obs of observationsById.values()) {
+    if (obs?.kind !== 'store8') continue;
+    if (obs?.dst?.space !== 'io' || ((obs.dst.addr ?? 0) & 0xffff) !== 0x2000) continue;
+    const ppuCtrl = normalizePpuCtrl(obs.ppuCtrl);
+    if (!ppuCtrl) continue;
+    out.push({
+      observationId: String(obs.id),
+      atRomOff: typeof obs.atRomOff === 'number' ? (obs.atRomOff >>> 0) : null,
+      cpuAddr: typeof obs.cpuAddr === 'number' ? (obs.cpuAddr & 0xffff) : null,
+      rawBlockId: typeof obs.rawBlockId === 'string' ? obs.rawBlockId : null,
+      entryFamilies: Array.isArray(obs.entryFamilies) ? [...obs.entryFamilies] : [],
+      functionIds: Array.isArray(obs.functionIds) ? [...obs.functionIds] : [],
+      srcReg: obs.srcReg || null,
+      target: {
+        addr: 0x2000,
+        name: ioName(0x2000)
+      },
+      ppuCtrl,
+      basis: obs.basis?.romOffSpan ? { romOffSpan: { start: obs.basis.romOffSpan.start >>> 0, end: obs.basis.romOffSpan.end >>> 0 } } : null
+    });
+  }
+  return out.sort((a, b) => {
+    const ar = typeof a.atRomOff === 'number' ? a.atRomOff : Number.MAX_SAFE_INTEGER;
+    const br = typeof b.atRomOff === 'number' ? b.atRomOff : Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return String(a.observationId).localeCompare(String(b.observationId));
+  });
+}
+
+function buildPpuDataWrites(observationsById) {
+  const out = [];
+  for (const obs of observationsById.values()) {
+    if (obs?.kind !== 'store8') continue;
+    const ppuDest = normalizePpuDest(obs.ppuDest);
+    if (!ppuDest) continue;
+    out.push({
+      observationId: String(obs.id),
+      atRomOff: typeof obs.atRomOff === 'number' ? (obs.atRomOff >>> 0) : null,
+      cpuAddr: typeof obs.cpuAddr === 'number' ? (obs.cpuAddr & 0xffff) : null,
+      rawBlockId: typeof obs.rawBlockId === 'string' ? obs.rawBlockId : null,
+      entryFamilies: Array.isArray(obs.entryFamilies) ? [...obs.entryFamilies] : [],
+      functionIds: Array.isArray(obs.functionIds) ? [...obs.functionIds] : [],
+      srcReg: obs.srcReg || null,
+      target: {
+        addr: 0x2007,
+        name: ioName(0x2007)
+      },
+      ppuDest,
+      basis: obs.basis?.romOffSpan ? { romOffSpan: { start: obs.basis.romOffSpan.start >>> 0, end: obs.basis.romOffSpan.end >>> 0 } } : null
+    });
+  }
+  return out.sort((a, b) => {
+    const ar = typeof a.atRomOff === 'number' ? a.atRomOff : Number.MAX_SAFE_INTEGER;
+    const br = typeof b.atRomOff === 'number' ? b.atRomOff : Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return String(a.observationId).localeCompare(String(b.observationId));
+  });
+}
+
 function buildAddressParticipation({ hardwareTraces }) {
   const byKey = new Map();
 
@@ -592,14 +718,22 @@ export function buildVsaDataflow({
     };
   });
 
+  const ppuCtrlWrites = buildPpuCtrlWrites(observationsById);
+  const ppuDataWrites = buildPpuDataWrites(observationsById);
+  const ppuCtrlWriteCount = ppuCtrlWrites.length;
+  const ppuDataWriteCount = ppuDataWrites.length;
+  const paletteWriteCount = ppuDataWrites.filter((write) => write.ppuDest?.class === 'palettes').length;
+  const attributeWriteCount = ppuDataWrites.filter((write) => write.ppuDest?.class === 'attributes').length;
   const addressParticipationByKey = buildAddressParticipation({ hardwareTraces });
 
   return {
-    version: 2,
+    version: 4,
     interestingIoAddrs: Array.from(interestingIoSet).sort((a, b) => a - b),
     ioWrites,
     readDefLinks,
     hardwareTraces,
+    ppuCtrlWrites,
+    ppuDataWrites,
     addressParticipationByKey,
     stats: {
       observationCount: observations.length,
@@ -607,6 +741,10 @@ export function buildVsaDataflow({
       interestingIoWriteCount: interestingIoWriteObservationIds.length,
       readDefLinkCount: readDefLinks.length,
       hardwareTraceCount: hardwareTraces.length,
+      ppuDataWriteCount,
+      classifiedPpuDataWriteCount: ppuDataWriteCount,
+      paletteWriteCount,
+      attributeWriteCount,
       addressParticipationCount: Object.keys(addressParticipationByKey).length
     }
   };

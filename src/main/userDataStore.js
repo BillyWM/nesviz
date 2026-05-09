@@ -4,14 +4,26 @@ import path from 'node:path';
 import { normalizeCpuAddr, normalizeRomOff } from '../shared/utils/addressUtils.js';
 import { normalizeWindowKey, normalizeWindowState } from './utils/windowStateNormalizeUtils.js';
 
-const USER_DATA_VERSION = 3;
+const USER_DATA_VERSION = 4;
 const USER_DATA_FILE = 'nesvizUserData.json';
 
 let loaded = false;
 let data = null;
 
 function emptyData() {
-  return { version: USER_DATA_VERSION, roms: {}, recentRoms: [], windows: {} };
+  return {
+    version: USER_DATA_VERSION,
+    roms: {},
+    recentRoms: [],
+    windows: {},
+    settings: { showNamedConstants: true }
+  };
+}
+
+function normalizeSettings(raw) {
+  return {
+    showNamedConstants: raw?.showNamedConstants !== false
+  };
 }
 
 function normalizeLabelText(label) {
@@ -61,10 +73,33 @@ async function loadFromDisk() {
       base.windows = parsed.windows;
     }
 
+    base.settings = normalizeSettings(parsed.settings);
+
     return base;
   } catch {
     return emptyData();
   }
+}
+
+
+export async function getUserSettings() {
+  await ensureUserDataLoaded();
+  data.settings = normalizeSettings(data.settings);
+  return { ...data.settings };
+}
+
+export function getUserSettingsSync() {
+  if (!loaded || !data) return { showNamedConstants: true };
+  data.settings = normalizeSettings(data.settings);
+  return { ...data.settings };
+}
+
+export async function setShowNamedConstantsSetting(showNamedConstants) {
+  await ensureUserDataLoaded();
+  data.settings = normalizeSettings(data.settings);
+  data.settings.showNamedConstants = showNamedConstants !== false;
+  await saveToDisk();
+  return { ...data.settings };
 }
 
 export async function getWindowState(key) {

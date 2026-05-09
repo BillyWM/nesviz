@@ -19,7 +19,7 @@ export default function TuningWindow() {
   const reload = useCallback(async () => {
     setStatus('Loading…');
     try {
-      const res = await window.nesviz?.getTuningState?.();
+      const res = await window.nesviz.getTuningState();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load tuning');
         return;
@@ -34,7 +34,6 @@ export default function TuningWindow() {
   useEffect(() => { reload(); }, [reload]);
 
   useEffect(() => {
-    if (!window?.nesviz?.onTuningUpdated) return;
     const unsub = window.nesviz.onTuningUpdated((payload) => {
       setTuning(payload?.tuning || null);
       setStatus('Changes apply to the next Analyze run.');
@@ -44,7 +43,7 @@ export default function TuningWindow() {
 
   const patch = useCallback(async (partial) => {
     try {
-      const res = await window.nesviz?.setTuningState?.(partial);
+      const res = await window.nesviz.setTuningState(partial);
       if (res?.ok) {
         setTuning(res.tuning || null);
         setStatus('Changes apply to the next Analyze run.');
@@ -56,7 +55,7 @@ export default function TuningWindow() {
 
   const reset = useCallback(async () => {
     try {
-      const res = await window.nesviz?.resetTuningState?.();
+      const res = await window.nesviz.resetTuningState();
       if (res?.ok) {
         setTuning(res.tuning || null);
         setStatus('Reset to defaults. Changes apply to the next Analyze run.');

@@ -8,7 +8,7 @@ export default function AnalysisLogWindow() {
   const reload = useCallback(async () => {
     setStatus('Loading…');
     try {
-      const res = await window.nesviz?.getAnalysisLog?.();
+      const res = await window.nesviz.getAnalysisLog();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load analysis log');
         return;
@@ -25,7 +25,6 @@ export default function AnalysisLogWindow() {
   }, [reload]);
 
   useEffect(() => {
-    if (!window?.nesviz?.onAnalysisLogUpdated) return;
     const unsub = window.nesviz.onAnalysisLogUpdated((payload) => {
       setLines(Array.isArray(payload?.lines) ? payload.lines : []);
       setStatus('');

@@ -11,6 +11,58 @@ function cpuText(cpuStart) {
   return typeof cpuStart === 'number' ? `$${hex4(cpuStart)}` : '—';
 }
 
+function normalizeBlockConfidence(confidence) {
+  if (confidence === 'mixed') return 'mixed';
+  if (confidence === 'probable') return 'probable';
+  return 'certain';
+}
+
+function codeTitle(baseLabel, confidence) {
+  const base = baseLabel || 'Code';
+  if (confidence === 'mixed') return `${base} (mixed)`;
+  if (confidence === 'probable') return `${base} (probable)`;
+  return base;
+}
+
+function promotionDebugEntries(debug) {
+  const entries = Array.isArray(debug?.entries) ? debug.entries : [];
+  return entries.filter((entry) => entry && typeof entry === 'object');
+}
+
+function promotionReasonText(entry) {
+  if (typeof entry?.acceptedReasonLabel === 'string' && entry.acceptedReasonLabel) return entry.acceptedReasonLabel;
+  if (typeof entry?.acceptedReason === 'string' && entry.acceptedReason) return entry.acceptedReason;
+  return 'accepted as probable code';
+}
+
+function promotionEvidenceText(entry) {
+  const labels = Array.isArray(entry?.evidenceLabels) ? entry.evidenceLabels : [];
+  const kinds = Array.isArray(entry?.evidenceKinds) ? entry.evidenceKinds : [];
+  const values = labels.length > 0 ? labels : kinds;
+  return values.filter((value) => typeof value === 'string' && value).join(', ');
+}
+
+function PromotionDebug({ entries }) {
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  const showNumbers = entries.length > 1;
+
+  return (
+    <div className="nv-block-debug">
+      {entries.map((entry, idx) => {
+        const reason = promotionReasonText(entry);
+        const evidence = promotionEvidenceText(entry);
+        const prefix = showNumbers ? `${idx + 1}/${entries.length}: ` : '';
+        return (
+          <div key={`${entry.rawBlockId || 'entry'}:${idx}`} className="nv-block-debug-section">
+            <div className="nv-block-debug-line">{prefix}{reason}</div>
+            {evidence ? <div className="nv-block-debug-line">Evidence: {evidence}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function BlockCard({
   item,
   blockIndex,
@@ -22,6 +74,8 @@ export function BlockCard({
   onNavigateToRomOff,
   labelsByRomOff,
   labelsByAddr,
+  showDebugInfo = false,
+  showNamedConstants = true,
   onToggleExpanded,
   onHoverLine,
   onContextMenuLine,
@@ -31,8 +85,12 @@ export function BlockCard({
   const cpuStart = inst?.cpuStart;
   const romStart = blockIndex?.romStart ?? item.romStart;
   const romEnd = blockIndex?.romEnd ?? item.romEnd;
-  const confidence = blockIndex?.confidence || 'certain';
+  const confidence = normalizeBlockConfidence(blockIndex?.confidence);
   const pills = Array.isArray(blockIndex?.pills) ? blockIndex.pills : [];
+  const promotionDebug = blockFull?.probablePromotionDebug || blockIndex?.probablePromotionDebug || null;
+  const promotionDebugEntriesForHeader = showDebugInfo && (confidence === 'probable' || confidence === 'mixed')
+    ? promotionDebugEntries(promotionDebug)
+    : [];
   const firstLine = blockFull?.lines?.[0] || blockIndex?.previewLines?.[0] || null;
   const firstRomOff = typeof firstLine?.romOff === 'number' ? (firstLine.romOff >>> 0) : (typeof romStart === 'number' ? (romStart >>> 0) : null);
   const label = (firstRomOff !== null && labelsByRomOff && typeof labelsByRomOff === 'object')
@@ -43,6 +101,10 @@ export function BlockCard({
     if (isExpanded && blockFull?.lines) return blockFull.lines;
     return blockIndex?.previewLines || [];
   }, [isExpanded, blockFull, blockIndex]);
+
+  const loopGuides = isExpanded && Array.isArray(blockFull?.loopGuides)
+    ? blockFull.loopGuides
+    : (Array.isArray(blockIndex?.loopGuides) ? blockIndex.loopGuides : []);
 
   const lineCount = blockFull?.lines?.length ?? blockIndex?.lineCount ?? lines.length;
   const showingCount = lines.length;
@@ -83,7 +145,7 @@ export function BlockCard({
   return (
     <section
       id={`nv-block-${item.blockId}`}
-      className={`nv-card nv-code ${confidence === 'probable' ? 'is-probable' : ''} ${isFocused ? 'is-focused' : ''}`}
+      className={`nv-card nv-code is-${confidence} ${isFocused ? 'is-focused' : ''}`}
     >
       <div
         className="nv-card-header nv-code-toprow"
@@ -101,7 +163,7 @@ export function BlockCard({
         title={isExpanded ? 'Collapse' : 'Expand'}
       >
         <div className="nv-card-header-left">
-          <div className="nv-card-title">{(label ? label : 'Code')}{confidence === 'probable' ? ' (probable)' : ''}</div>
+          <div className="nv-card-title">{codeTitle(label, confidence)}</div>
         </div>
 
         <div className="nv-card-actions">
@@ -129,6 +191,8 @@ export function BlockCard({
           <span className="nv-sub-dot">·</span>
           <span className="nv-sub-bytes">{item.byteLen} bytes</span>
         </div>
+
+        <PromotionDebug entries={promotionDebugEntriesForHeader} />
 
         {inboundTotal > 0 ? (
           <div className="nv-inbound">
@@ -185,10 +249,13 @@ export function BlockCard({
             currentBlockId={item.blockId}
             labelsByRomOff={labelsByRomOff}
             labelsByAddr={labelsByAddr}
+            showDebugInfo={showDebugInfo}
+            showNamedConstants={showNamedConstants}
             onNavigateToRomOff={onNavigateToRomOff}
             onHoverLine={onHoverLine}
             onContextMenuLine={onContextMenuLine}
             markedRomSpan={markedRomSpan}
+            loopGuides={loopGuides}
           />
 
           {lineCount > showingCount ? (

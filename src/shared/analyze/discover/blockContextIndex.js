@@ -67,6 +67,18 @@ function toSortedObjectArray(map) {
   return out;
 }
 
+function toSortedObject(map) {
+  const out = {};
+  for (const [key, value] of map.entries()) out[key] = value;
+  return out;
+}
+
+function blockRomStart(block) {
+  if (typeof block?.romStart === 'number') return block.romStart >>> 0;
+  if (typeof block?.lines?.[0]?.romOff === 'number') return block.lines[0].romOff >>> 0;
+  return null;
+}
+
 export function buildBlockContextIndex({
   blocks,
   edges,
@@ -74,6 +86,7 @@ export function buildBlockContextIndex({
   vectorSeedItemsByFamily = null
 }) {
   const blockIds = new Set((blocks || []).map((block) => block.id));
+  const blockById = new Map((blocks || []).filter((block) => block?.id).map((block) => [block.id, block]));
   const blockCpuStartsById = new Map();
   for (const block of blocks || []) blockCpuStartsById.set(block.id, valuesFromBlockStarts(block));
 
@@ -126,19 +139,36 @@ export function buildBlockContextIndex({
   }
 
   const functionRoots = new Map();
-  for (const [blockId] of familyRoots.entries()) addToSetMap(functionRoots, blockId, `function:${blockId}`);
-  for (const blockId of callTargetIds) addToSetMap(functionRoots, blockId, `function:${blockId}`);
+  const functionInfoById = new Map();
+
+  function addFunctionRoot(blockId, functionId) {
+    addToSetMap(functionRoots, blockId, functionId);
+    const block = blockById.get(blockId);
+    const romStart = blockRomStart(block);
+    functionInfoById.set(functionId, {
+      id: functionId,
+      rootBlockId: blockId,
+      functionRomStart: romStart
+    });
+  }
+
+  for (const [blockId] of familyRoots.entries()) addFunctionRoot(blockId, `function:${blockId}`);
+  for (const blockId of callTargetIds) addFunctionRoot(blockId, `function:${blockId}`);
 
   let rawBlockFunctionIdsById = propagateSets({ roots: functionRoots, succs: functionSuccs, blockIds });
   for (const block of blocks || []) {
     if (rawBlockFunctionIdsById.has(block.id)) continue;
-    rawBlockFunctionIdsById.set(block.id, new Set([`function:${block.id}`]));
+    const functionId = `function:${block.id}`;
+    rawBlockFunctionIdsById.set(block.id, new Set([functionId]));
+    addFunctionRoot(block.id, functionId);
   }
 
   return {
     rawBlockFamiliesById,
     rawBlockFunctionIdsById,
     rawBlockFamiliesByIdObject: toSortedObjectArray(rawBlockFamiliesById),
-    rawBlockFunctionIdsByIdObject: toSortedObjectArray(rawBlockFunctionIdsById)
+    rawBlockFunctionIdsByIdObject: toSortedObjectArray(rawBlockFunctionIdsById),
+    functionInfoById,
+    functionInfoByIdObject: toSortedObject(functionInfoById)
   };
 }

@@ -1,5 +1,5 @@
 export function getCurrentSelectionText() {
-  const selection = window.getSelection?.();
+  const selection = window.getSelection();
   if (!selection || selection.rangeCount < 1 || selection.isCollapsed) return '';
   const text = selection.toString();
   return typeof text === 'string' ? text : '';

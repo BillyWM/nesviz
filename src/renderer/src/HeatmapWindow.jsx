@@ -165,7 +165,7 @@ export default function HeatmapWindow() {
   const reload = useCallback(async () => {
     setStatus('');
     try {
-      const res = await window.nesviz?.getHeatmapData?.();
+      const res = await window.nesviz.getHeatmapData();
       if (!res?.ok) {
         setStatus(res?.error || 'Failed to load heatmap');
         return;
@@ -183,7 +183,6 @@ export default function HeatmapWindow() {
   }, [reload]);
 
   useEffect(() => {
-    if (!window?.nesviz?.onHeatmapDataChanged) return undefined;
     return window.nesviz.onHeatmapDataChanged(() => {
       reload();
     });
