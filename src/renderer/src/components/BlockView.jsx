@@ -1,5 +1,20 @@
 import { hex4, hex6 } from '../util/hex.js';
 
+function normalizeCpuAddrCandidates(line) {
+  if (!Array.isArray(line?.cpuAddrCandidates)) return [];
+  return Array.from(new Set(line.cpuAddrCandidates
+    .filter((addr) => Number.isInteger(addr))
+    .map((addr) => addr & 0xffff)))
+    .sort((a, b) => a - b);
+}
+
+function cpuAddrTooltip(line) {
+  if (typeof line?.cpuAddr === 'number') return undefined;
+  const candidates = normalizeCpuAddrCandidates(line);
+  if (!candidates.length) return undefined;
+  return `Possible CPU addresses:\n${candidates.map((addr) => `$${hex4(addr)}`).join('\n')}`;
+}
+
 export function BlockView({ block }) {
   if (!block) {
     return (
@@ -25,7 +40,9 @@ export function BlockView({ block }) {
         {block.lines.map((line, index) => (
           <div key={typeof line.romOff === 'number' ? `rom:${line.romOff}` : `${line.cpuAddr}:${index}`} className="nv-line">
             <div className="nv-col-rom">{hex6(line.romOff)}</div>
-            <div className="nv-col-cpu">${hex4(line.cpuAddr)}</div>
+            <div className="nv-col-cpu" title={cpuAddrTooltip(line)}>
+              {typeof line.cpuAddr === 'number' ? `$${hex4(line.cpuAddr)}` : '—'}
+            </div>
             <div className="nv-col-bytes">{line.bytesText}</div>
             <div className="nv-col-asm">{line.asm}</div>
           </div>

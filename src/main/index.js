@@ -2,7 +2,9 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { registerAnalysisIpc, getActiveAnalysisState } from './analysisIpc.js';
+import { registerAnalysisIpc, getActiveAnalysisState } from './analyze2/analysisIpc.js';
+import { registerCodeViewIpc } from './codeView/codeViewIpc.js';
+import { registerRomFeaturesIpc } from './romFeaturesIpc.js';
 import { registerTraceStreamerIpc } from './traceStreamer/traceStreamerIpc.js';
 import { installAppMenu, registerMenuSettingsIpc } from './menu.js';
 import { ensureUserDataLoaded, getRecentRomPaths } from './userDataStore.js';
@@ -69,6 +71,8 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
   registerAnalysisIpc();
+  registerCodeViewIpc({ getActiveState: getActiveAnalysisState });
+  registerRomFeaturesIpc({ getActiveState: getActiveAnalysisState });
   registerTraceStreamerIpc();
   registerRomListIpc();
   registerPreferencesIpc();

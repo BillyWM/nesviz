@@ -1,12 +1,27 @@
 import { fmtHex } from '../../../shared/utils/numberUtils.js';
 import { parseBytesText } from '../../../shared/utils/byteUtils.js';
 import { u16le } from '../../../shared/utils/byteUtils.js';
-import { getNamedRegisterName } from '../../../shared/nes/namedRegisters.js';
+import { getNamedRegister, formatNamedRegisterTooltip } from '../../../shared/nes/namedRegisters.js';
 
 function getAddrLabel(labelsByAddr, addr) {
   if (!labelsByAddr || typeof labelsByAddr !== 'object') return '';
   const v = labelsByAddr[String(addr & 0xffff)];
   return typeof v === 'string' ? v : '';
+}
+
+function normalizeCpuAddrCandidates(line) {
+  if (!Array.isArray(line?.cpuAddrCandidates)) return [];
+  return Array.from(new Set(line.cpuAddrCandidates
+    .filter((addr) => Number.isInteger(addr))
+    .map((addr) => addr & 0xffff)))
+    .sort((a, b) => a - b);
+}
+
+function cpuAddrTooltip(line) {
+  if (typeof line?.cpuAddr === 'number') return undefined;
+  const candidates = normalizeCpuAddrCandidates(line);
+  if (!candidates.length) return undefined;
+  return `Possible CPU addresses:\n${candidates.map((addr) => `$${fmtHex(addr, 4)}`).join('\n')}`;
 }
 
 function fmtZpOrLabel(labelsByAddr, zpAddr) {
@@ -15,17 +30,33 @@ function fmtZpOrLabel(labelsByAddr, zpAddr) {
   return lbl || `$${fmtHex(a, 2)}`;
 }
 
+function namedRegisterOptions(options) {
+  const mapper = typeof options?.mapperFamily === 'string' && options.mapperFamily
+    ? options.mapperFamily
+    : (typeof options?.mapper === 'string' && options.mapper ? options.mapper : null);
+  const out = mapper ? { space: 'cpu', mapper } : { space: 'cpu' };
+  if (typeof options?.mnemonic === 'string') out.mnemonic = options.mnemonic;
+  if (typeof options?.mode === 'string') out.mode = options.mode;
+  return out;
+}
+
 function fmtAbsOrLabel(labelsByAddr, absAddr, options = null) {
   const a = absAddr & 0xffff;
   const lbl = getAddrLabel(labelsByAddr, a);
-  if (lbl) return lbl;
-  const named = options?.showNamedConstants !== false ? getNamedRegisterName(a, { space: 'cpu' }) : '';
-  return named || `$${fmtHex(a, 4)}`;
+  if (lbl) return { text: lbl, title: '' };
+  if (options?.showNamedConstants !== false) {
+    const named = getNamedRegister(a, namedRegisterOptions(options));
+    if (named?.name) {
+      return { text: named.name, title: formatNamedRegisterTooltip(named) };
+    }
+  }
+  return { text: `$${fmtHex(a, 4)}`, title: '' };
 }
 
 function buildOperandDisplay(line, labelsByAddr, options = null) {
   const mode = line?.mode;
   const mnemonic = line?.mnemonic;
+  const addressOptions = { ...(options || {}), mnemonic, mode };
   const bytes = parseBytesText(line?.bytesText, { strict: false });
 
   // Prefer the discovered CFG target for control-flow instructions.
@@ -35,7 +66,8 @@ function buildOperandDisplay(line, labelsByAddr, options = null) {
 
   // Helper to build a base address (and its label) without decorations.
   function baseAbs(addr) {
-    return { text: fmtAbsOrLabel(labelsByAddr, addr, options), addr: addr & 0xffff };
+    const formatted = fmtAbsOrLabel(labelsByAddr, addr, addressOptions);
+    return { text: formatted.text, title: formatted.title, addr: addr & 0xffff };
   }
 
   function baseZp(addr) {
@@ -44,46 +76,49 @@ function buildOperandDisplay(line, labelsByAddr, options = null) {
 
   // Some lines may not have structured decode fields yet (or at all). Fall back to raw asm.
   if (typeof mnemonic !== 'string' || !mnemonic) {
-    return { operandText: null, operandAddr: null };
+    return { operandText: null, operandAddr: null, operandTitle: '' };
   }
 
   switch (mode) {
     case 'imp':
-      return { operandText: '', operandAddr: null };
+      return { operandText: '', operandAddr: null, operandTitle: '' };
 
     case 'acc':
-      return { operandText: 'A', operandAddr: null };
+      return { operandText: 'A', operandAddr: null, operandTitle: '' };
 
     case 'imm': {
       const imm = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
-      if (imm == null) return { operandText: '', operandAddr: null };
-      return { operandText: `#$${fmtHex(imm, 2)}`, operandAddr: null };
+      if (imm == null) return { operandText: '', operandAddr: null, operandTitle: '' };
+      return { operandText: `#$${fmtHex(imm, 2)}`, operandAddr: null, operandTitle: '' };
     }
 
     case 'rel': {
-      if (flowTarget == null) return { operandText: '', operandAddr: null };
-      return { operandText: fmtAbsOrLabel(labelsByAddr, flowTarget, { showNamedConstants: false }), operandAddr: flowTarget };
+      if (flowTarget == null) return { operandText: '', operandAddr: null, operandTitle: '' };
+      {
+        const formatted = fmtAbsOrLabel(labelsByAddr, flowTarget, { showNamedConstants: false });
+        return { operandText: formatted.text, operandAddr: flowTarget, operandTitle: formatted.title };
+      }
     }
 
     case 'zp': {
       const zp = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
-      if (zp == null) return { operandText: '', operandAddr: null };
+      if (zp == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseZp(zp);
-      return { operandText: b.text, operandAddr: b.addr };
+      return { operandText: b.text, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'zpX': {
       const zp = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
-      if (zp == null) return { operandText: '', operandAddr: null };
+      if (zp == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseZp(zp);
-      return { operandText: `${b.text},X`, operandAddr: b.addr };
+      return { operandText: `${b.text},X`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'zpY': {
       const zp = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
-      if (zp == null) return { operandText: '', operandAddr: null };
+      if (zp == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseZp(zp);
-      return { operandText: `${b.text},Y`, operandAddr: b.addr };
+      return { operandText: `${b.text},Y`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'abs': {
@@ -93,61 +128,75 @@ function buildOperandDisplay(line, labelsByAddr, options = null) {
       const abs = (flowTarget != null && isAbsFlow)
         ? flowTarget
         : (bytes.length >= 3 ? u16le(bytes, 1) : null);
-      if (abs == null) return { operandText: '', operandAddr: null };
+      if (abs == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = isAbsFlow
-        ? { text: fmtAbsOrLabel(labelsByAddr, abs, { showNamedConstants: false }), addr: abs & 0xffff }
+        ? (() => { const formatted = fmtAbsOrLabel(labelsByAddr, abs, { showNamedConstants: false }); return { text: formatted.text, title: formatted.title, addr: abs & 0xffff }; })()
         : baseAbs(abs);
-      return { operandText: b.text, operandAddr: b.addr };
+      return { operandText: b.text, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'absX': {
       const abs = bytes.length >= 3 ? u16le(bytes, 1) : null;
-      if (abs == null) return { operandText: '', operandAddr: null };
+      if (abs == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseAbs(abs);
-      return { operandText: `${b.text},X`, operandAddr: b.addr };
+      return { operandText: `${b.text},X`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'absY': {
       const abs = bytes.length >= 3 ? u16le(bytes, 1) : null;
-      if (abs == null) return { operandText: '', operandAddr: null };
+      if (abs == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseAbs(abs);
-      return { operandText: `${b.text},Y`, operandAddr: b.addr };
+      return { operandText: `${b.text},Y`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'ind': {
       const abs = bytes.length >= 3 ? u16le(bytes, 1) : null;
-      if (abs == null) return { operandText: '', operandAddr: null };
+      if (abs == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseAbs(abs);
-      return { operandText: `(${b.text})`, operandAddr: b.addr };
+      return { operandText: `(${b.text})`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'indX': {
       const zp = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
-      if (zp == null) return { operandText: '', operandAddr: null };
+      if (zp == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseZp(zp);
-      return { operandText: `(${b.text},X)`, operandAddr: b.addr };
+      return { operandText: `(${b.text},X)`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     case 'indY': {
       const zp = bytes.length >= 2 ? (bytes[1] & 0xff) : null;
-      if (zp == null) return { operandText: '', operandAddr: null };
+      if (zp == null) return { operandText: '', operandAddr: null, operandTitle: '' };
       const b = baseZp(zp);
-      return { operandText: `(${b.text}),Y`, operandAddr: b.addr };
+      return { operandText: `(${b.text}),Y`, operandAddr: b.addr, operandTitle: b.title || '' };
     }
 
     default:
-      return { operandText: null, operandAddr: null };
+      return { operandText: null, operandAddr: null, operandTitle: '' };
   }
 }
 
-export function buildAsmText(line, labelsByAddr, options = null) {
+export function buildAsmDisplay(line, labelsByAddr, options = null) {
   const mnemonic = typeof line?.mnemonic === 'string' ? line.mnemonic : '';
-  if (!mnemonic) return typeof line?.asm === 'string' ? line.asm : '';
+  if (!mnemonic) {
+    return {
+      asmText: typeof line?.asm === 'string' ? line.asm : '',
+      title: ''
+    };
+  }
 
-  const { operandText } = buildOperandDisplay(line, labelsByAddr, options);
-  if (operandText === null) return typeof line?.asm === 'string' ? line.asm : mnemonic;
-  if (!operandText) return mnemonic;
-  return `${mnemonic} ${operandText}`;
+  const { operandText, operandTitle } = buildOperandDisplay(line, labelsByAddr, options);
+  if (operandText === null) {
+    return {
+      asmText: typeof line?.asm === 'string' ? line.asm : mnemonic,
+      title: ''
+    };
+  }
+  const asmText = operandText ? `${mnemonic} ${operandText}` : mnemonic;
+  return { asmText, title: operandTitle || '' };
+}
+
+export function buildAsmText(line, labelsByAddr, options = null) {
+  return buildAsmDisplay(line, labelsByAddr, options).asmText;
 }
 
 function getOperandAddrForMenu(line) {
@@ -287,7 +336,8 @@ export function CodeLines({
   markedRomSpan,
   loopGuides,
   showDebugInfo = false,
-  showNamedConstants = true
+  showNamedConstants = true,
+  mapper = null
 }) {
   if (!lines || lines.length === 0) return null;
 
@@ -295,6 +345,9 @@ export function CodeLines({
   const spanEnd = typeof markedRomSpan?.end === 'number' ? (markedRomSpan.end >>> 0) : null;
   const hasMarkedSpan = spanStart !== null && spanEnd !== null && spanEnd > spanStart;
   const loopGuideRows = buildLoopGuideRows(lines, loopGuides);
+  const mapperFamily = typeof mapper?.family === 'string' && mapper.family
+    ? mapper.family
+    : (typeof mapper?.kind === 'string' && mapper.kind ? mapper.kind : null);
 
   return (
     <div className="nv-code-lines">
@@ -306,9 +359,14 @@ export function CodeLines({
           ? (labelsByRomOff[String(lineRomOff)]?.label || '')
           : '';
 
-        const asmText = buildAsmText(line, labelsByAddr, { showNamedConstants });
+        const asmDisplay = buildAsmDisplay(line, labelsByAddr, { showNamedConstants, mapperFamily });
+        const asmText = asmDisplay.asmText;
+        const asmTitle = asmDisplay.title;
 
         const flowType = line?.flow?.type;
+        const deadCode = line?.deadCode || null;
+        const isDeadCode = !!deadCode;
+        const isDeadControlFlow = isDeadCode && (flowType === 'branch' || flowType === 'jump' || flowType === 'jmp_ind');
         const isDirect = flowType === 'branch' || flowType === 'jump' || flowType === 'call';
         const targetRomOff = isDirect && typeof line.flow?.targetRomOff === 'number'
           ? (line.flow.targetRomOff >>> 0)
@@ -331,6 +389,8 @@ export function CodeLines({
         const lineClassName = [
           'nv-line',
           isMarked ? 'is-poi-marked' : '',
+          isDeadCode ? 'is-dead-code' : '',
+          isDeadControlFlow ? 'is-dead-control-flow' : '',
           isRawCfgBlockEnd ? 'is-raw-cfg-block-end' : '',
           isRawCfgBlockEnd ? `is-raw-cfg-block-end-${rawCfgBlockEndKind}` : ''
         ].filter(Boolean).join(' ');
@@ -365,10 +425,12 @@ export function CodeLines({
           >
             <div className={`nv-confidence-rail-segment is-${lineConfidence}`} aria-hidden="true" />
             <div className="nv-col-romoff">{fmtHex(line.romOff, 6)}</div>
-            <div className="nv-col-cpu">${fmtHex(line.cpuAddr, 4)}</div>
+            <div className="nv-col-cpu" title={cpuAddrTooltip(line)}>
+              {typeof line.cpuAddr === 'number' ? `$${fmtHex(line.cpuAddr, 4)}` : '—'}
+            </div>
             <div className="nv-col-bytes">{line.bytesText}</div>
             <div className="nv-col-label">{lineLabel}</div>
-            <div className="nv-col-asm">
+            <div className="nv-col-asm" title={!canNav && asmTitle ? asmTitle : undefined}>
               <LoopGuideGutter segments={loopGuideRows[index]} />
               {canNav ? (
                 <button

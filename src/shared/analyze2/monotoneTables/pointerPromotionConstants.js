@@ -1,0 +1,1 @@
+export const MIN_PROMOTED_POINTER_TABLE_ENTRIES = 4;

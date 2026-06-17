@@ -73,7 +73,7 @@ function GraphBlockNode({ data }) {
             key={`${data?.id || 'node'}:${typeof line?.romOff === 'number' ? `rom:${line.romOff}` : 'line'}:${index}`}
             className="graph-node-line"
           >
-            <div className="graph-node-line-cpu">${fmtHex(line?.cpuAddr, 4)}</div>
+            <div className="graph-node-line-cpu">{typeof line?.cpuAddr === 'number' ? `$${fmtHex(line.cpuAddr, 4)}` : '—'}</div>
             <div className="graph-node-line-asm">{line?.asm || ''}</div>
           </div>
         ))}

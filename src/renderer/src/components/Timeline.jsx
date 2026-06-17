@@ -8,15 +8,39 @@ function cpuText(cpuStart) {
   return typeof cpuStart === 'number' ? `$${hex4(cpuStart)}` : '';
 }
 
+
+
+function isVisibleTimelineItem(item, blocksById) {
+  if (!item || item.type !== 'code' || !item.blockId) return true;
+  const blockIndex = blocksById?.get?.(item.blockId);
+  const anchorBlockId = blockIndex?.bankVariantAnchorBlockId;
+  return !anchorBlockId || anchorBlockId === item.blockId;
+}
+
+function selectedTimelineBlockId(selectedBlockId, blocksById) {
+  if (!selectedBlockId) return null;
+  const blockIndex = blocksById?.get?.(selectedBlockId);
+  return blockIndex?.bankVariantAnchorBlockId || selectedBlockId;
+}
+
+function TimelineBankBadge({ bankVariant }) {
+  if (!bankVariant) return null;
+  const label = typeof bankVariant.bankLabel === 'string' && bankVariant.bankLabel ? bankVariant.bankLabel : String(bankVariant.bankIndex ?? '?');
+  return <span className="nv-bank-button nv-bank-button-tile is-selected">{label}</span>;
+}
+
 export function Timeline({ timeline, blocksById, selectedBlockId, onSelectBlock, onSelectGap }) {
+  const visibleTimeline = timeline.filter((item) => isVisibleTimelineItem(item, blocksById));
+  const visibleSelectedBlockId = selectedTimelineBlockId(selectedBlockId, blocksById);
+
   return (
     <div className="nv-timeline">
-      {timeline.map((item, idx) => {
+      {visibleTimeline.map((item, idx) => {
         if (item.type === 'code' && item.blockId) {
           const b = blocksById.get(item.blockId);
-          const inst = b?.instances?.[0];
+          const cpuStart = b?.cpuStart;
           const firstAsm = b?.firstAsm || b?.lines?.[0]?.asm || '';
-          const isSelected = item.blockId === selectedBlockId;
+          const isSelected = item.blockId === visibleSelectedBlockId;
           return (
             <button
               key={`${item.type}:${item.blockId}:${idx}`}
@@ -24,18 +48,18 @@ export function Timeline({ timeline, blocksById, selectedBlockId, onSelectBlock,
               onClick={() => onSelectBlock?.(item.blockId)}
             >
               <div className="nv-tile-row">
-                <div className="nv-tile-title">Code</div>
+                <div className="nv-tile-title"><TimelineBankBadge bankVariant={b?.bankVariant} />Code</div>
                 <div className="nv-tile-range">{rangeText(item.romStart, item.romEnd)}</div>
               </div>
               <div className="nv-tile-sub">
-                {inst ? `CPU ${cpuText(inst.cpuStart)} · ${item.byteLen} bytes` : `${item.byteLen} bytes`}
+                {typeof cpuStart === 'number' ? `CPU ${cpuText(cpuStart)} · ${item.byteLen} bytes` : `${item.byteLen} bytes`}
               </div>
               {firstAsm ? <div className="nv-tile-subline">{firstAsm}</div> : null}
             </button>
           );
         }
 
-        const label = item.type === 'code' ? 'code' : item.type === 'data' ? 'data' : 'unknown';
+        const label = item.type === 'code' ? 'Code' : item.type === 'data' ? 'Data' : 'Unknown';
         return (
           <div
             key={`${item.type}:${item.romStart}:${idx}`}

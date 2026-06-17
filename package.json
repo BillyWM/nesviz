@@ -1,12 +1,11 @@
 {
   "name": "nesviz",
-  "version": "0.0.5",
+  "version": "0.6.0",
   "description": "NESViz - An NES reverse-engineering tool",
   "main": "./out/main/index.js",
   "author": "William Wenge-Murphy",
   "homepage": "https://billy.wenge-murphy.com/nesviz",
   "scripts": {
-    "zipit": "node zipit.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "electron-vite preview",

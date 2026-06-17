@@ -35,13 +35,137 @@ function gapKeyFor(item) {
 }
 
 
+function normalizeBlockIndexEntry(block) {
+  if (!block || typeof block !== 'object') return null;
+  const id = typeof block.id === 'string' ? block.id : '';
+  const romStart = typeof block.romStart === 'number' ? block.romStart : Number(block.romStart);
+  const romEnd = typeof block.romEnd === 'number' ? block.romEnd : Number(block.romEnd);
+  const cpuStart = typeof block.cpuStart === 'number' ? block.cpuStart : (block.cpuStart != null ? Number(block.cpuStart) : null);
+  const cpuEnd = typeof block.cpuEnd === 'number' ? block.cpuEnd : (block.cpuEnd != null ? Number(block.cpuEnd) : null);
+  if (!id || !Number.isFinite(romStart) || !Number.isFinite(romEnd)) return null;
+  return {
+    ...block,
+    id,
+    romStart: romStart >>> 0,
+    romEnd: romEnd >>> 0,
+    cpuStart: Number.isFinite(cpuStart) ? (cpuStart & 0xffff) : null,
+    cpuEnd: Number.isFinite(cpuEnd) ? (cpuEnd & 0xffff) : null
+  };
+}
+
+function normalizeBlocksIndex(blocksIndex) {
+  return (Array.isArray(blocksIndex) ? blocksIndex : [])
+    .map(normalizeBlockIndexEntry)
+    .filter(Boolean);
+}
+
+function rowKeyForTimelineItem(item, blocksById) {
+  if (!item || typeof item !== 'object') return null;
+  if (item.type === 'code') {
+    const block = blocksById?.get?.(item.blockId) || null;
+    const romStart = typeof block?.romStart === 'number'
+      ? block.romStart
+      : (typeof item.romStart === 'number' ? item.romStart : Number(item.romStart));
+    if (Number.isFinite(romStart)) return `code-rom:${romStart >>> 0}`;
+    return item.blockId ? `code:${item.blockId}` : null;
+  }
+  return gapKeyFor(item);
+}
+
+function normalizeDisplayTimeline(timeline, blocksIndex) {
+  const blocksById = new Map(blocksIndex.map((block) => [block.id, block]));
+  let built = Array.isArray(timeline) && timeline.length ? timeline : buildViewATimelineFromBlocks(blocksIndex);
+
+  if (built.length === 0 && blocksIndex.length) {
+    const sorted = [...blocksIndex].sort((a, b) => a.romStart - b.romStart);
+    built = sorted.map((b) => ({
+      type: 'code',
+      blockId: b.id,
+      romStart: b.romStart,
+      romEnd: b.romEnd,
+      byteLen: (b.romEnd - b.romStart) | 0
+    }));
+  }
+
+  return built.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const rowKey = rowKeyForTimelineItem(item, blocksById);
+    return rowKey ? { ...item, rowKey } : item;
+  });
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+function blockUpdateSignature(block) {
+  if (!block || typeof block !== 'object') return '';
+  return stableJson({
+    id: block.id,
+    romStart: block.romStart,
+    romEnd: block.romEnd,
+    cpuStart: block.cpuStart,
+    cpuEnd: block.cpuEnd,
+    lineCount: block.lineCount,
+    firstAsm: block.firstAsm,
+    pills: block.pills || [],
+    loopGuides: block.loopGuides || [],
+    inbound: block.inbound || null,
+    bankVariants: block.bankVariants || [],
+    bankVariantAnchorBlockId: block.bankVariantAnchorBlockId || null,
+    isBankVariantAnchor: block.isBankVariantAnchor === true
+  });
+}
+
+function diffDisplayBlocks(oldBlocks, newBlocks) {
+  const oldById = new Map((oldBlocks || []).map((block) => [block.id, block]));
+  const newById = new Map((newBlocks || []).map((block) => [block.id, block]));
+  const addedBlockIds = [];
+  const changedBlockIds = [];
+  const removedBlockIds = [];
+  const addedRomStarts = [];
+  const changedRomStarts = [];
+  const removedRomStarts = [];
+
+  for (const block of newBlocks || []) {
+    const old = oldById.get(block.id);
+    if (!old) {
+      addedBlockIds.push(block.id);
+      if (Number.isFinite(block.romStart)) addedRomStarts.push(block.romStart >>> 0);
+      continue;
+    }
+    if (blockUpdateSignature(old) !== blockUpdateSignature(block)) {
+      changedBlockIds.push(block.id);
+      if (Number.isFinite(block.romStart)) changedRomStarts.push(block.romStart >>> 0);
+    }
+  }
+
+  for (const block of oldBlocks || []) {
+    if (newById.has(block.id)) continue;
+    removedBlockIds.push(block.id);
+    if (Number.isFinite(block.romStart)) removedRomStarts.push(block.romStart >>> 0);
+  }
+
+  return {
+    addedBlockIds,
+    changedBlockIds,
+    removedBlockIds,
+    addedRomStarts,
+    changedRomStarts,
+    removedRomStarts
+  };
+}
+
+
 
 export default function App() {
   const [rom, setRom] = useState(null);
   const [romHash, setRomHash] = useState(null);
   const [vectors, setVectors] = useState(null);
   const [vectorDestinations, setVectorDestinations] = useState(emptyVectorDestinations());
-  const [openVectorMenuFamily, setOpenVectorMenuFamily] = useState(null);
   const [cdl, setCdl] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [blocks, setBlocks] = useState([]);
@@ -65,14 +189,18 @@ export default function App() {
   // Hovered code row (in-memory only). We keep this in a ref to avoid rerendering on hover.
   const hoveredLineRef = useRef(null);
   const contextMenuRef = useRef(null);
+  const vectorPopupRef = useRef(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [vectorPopup, setVectorPopup] = useState(null);
   const [shownGapBytesByKey, setShownGapBytesByKey] = useState({});
   const [gapBytesByKey, setGapBytesByKey] = useState({});
   const [gapBytesLoadingByKey, setGapBytesLoadingByKey] = useState({});
   const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [showNamedConstants, setShowNamedConstants] = useState(true);
   const [analysisDebug, setAnalysisDebug] = useState(null);
-  const [vsaDebugModal, setVsaDebugModal] = useState(null);
+  const [blockAnalysisDebugModal, setBlockAnalysisDebugModal] = useState(null);
+  const [codeViewUpdate, setCodeViewUpdate] = useState(null);
+  const [codeViewResetToken, setCodeViewResetToken] = useState(0);
 
   // Label editing modal (in-memory only).
   const [labelModal, setLabelModal] = useState(null);
@@ -83,6 +211,12 @@ export default function App() {
   const stackApiRef = useRef({});
   const suppressHistoryPushRef = useRef(false);
   const openRequestIdRef = useRef(0);
+  const analysisRunIdRef = useRef(0);
+  const romHashRef = useRef(null);
+  const isAnalyzingRef = useRef(false);
+  const timelineRef = useRef([]);
+  const blocksRef = useRef([]);
+  const codeViewUpdateRevisionRef = useRef(0);
 
   const blocksById = useBlocksById(blocks);
 
@@ -97,6 +231,18 @@ export default function App() {
       return { ...prev, x: pos.x, y: pos.y };
     });
   }, [contextMenu]);
+
+  useLayoutEffect(() => {
+    if (!vectorPopup || !vectorPopupRef.current) return;
+    const rect = vectorPopupRef.current.getBoundingClientRect();
+    const pos = clampContextMenuPosition(vectorPopup.x, vectorPopup.y, rect.width, rect.height);
+    if (pos.x === vectorPopup.x && pos.y === vectorPopup.y) return;
+    setVectorPopup((prev) => {
+      if (!prev) return prev;
+      if (prev.x === pos.x && prev.y === pos.y) return prev;
+      return { ...prev, x: pos.x, y: pos.y };
+    });
+  }, [vectorPopup]);
 
   useEffect(() => {
     // Live VSA progress streamed from the analysis worker.
@@ -115,6 +261,74 @@ export default function App() {
       });
     });
   }, []);
+
+  useEffect(() => {
+    romHashRef.current = romHash;
+  }, [romHash]);
+
+  useEffect(() => {
+    isAnalyzingRef.current = isAnalyzing;
+  }, [isAnalyzing]);
+
+  useEffect(() => {
+    timelineRef.current = timeline;
+  }, [timeline]);
+
+  useEffect(() => {
+    blocksRef.current = blocks;
+  }, [blocks]);
+
+  function applyDisplaySnapshot(payload) {
+    if (!payload || payload.kind !== 'displaySnapshot') return;
+    const nextBlocks = normalizeBlocksIndex(payload.blocksIndex);
+    const nextTimeline = normalizeDisplayTimeline(payload.timeline, nextBlocks);
+    const diff = diffDisplayBlocks(blocksRef.current, nextBlocks);
+    const revision = (codeViewUpdateRevisionRef.current + 1) | 0;
+    codeViewUpdateRevisionRef.current = revision;
+
+    blocksRef.current = nextBlocks;
+    timelineRef.current = nextTimeline;
+    setBlocks(nextBlocks);
+    setTimeline(nextTimeline);
+    setMapper(payload.mapper || null);
+    setStats(payload.stats || null);
+    setAnalysisDebug(payload.debug || null);
+    setVectorDestinations((payload.vectorDestinationsByFamily && typeof payload.vectorDestinationsByFamily === 'object')
+      ? payload.vectorDestinationsByFamily
+      : emptyVectorDestinations());
+    setCodeViewUpdate({ revision, ...diff });
+
+    const removed = new Set(diff.removedBlockIds);
+    if (removed.size) {
+      setContextMenu((prev) => (prev?.blockId && removed.has(prev.blockId)) ? null : prev);
+      setBlockAnalysisDebugModal((prev) => {
+        const debugBlockId = prev?.debug?.displayBlockId || prev?.debug?.blockId || null;
+        return debugBlockId && removed.has(debugBlockId) ? null : prev;
+      });
+    }
+
+    const codeCount = nextTimeline.filter((t) => t.type === 'code').length;
+    const dataCount = nextTimeline.filter((t) => t.type === 'data').length;
+    const prefix = payload.complete
+      ? 'Analysis complete.'
+      : (payload.stage === 'strictCfg' ? 'Exact CFG ready; continuing analysis…' : 'Analysis view updated; continuing analysis…');
+    setStatus(`${prefix} Blocks: ${nextBlocks.length}. Rendered: ${nextTimeline.length} items (${codeCount} code, ${dataCount} data).`);
+  }
+
+  useEffect(() => {
+    if (typeof window.nesviz.onAnalysisDisplayUpdated !== 'function') return undefined;
+    return window.nesviz.onAnalysisDisplayUpdated((payload) => {
+      if (!payload || payload.kind !== 'displaySnapshot') return;
+      if (!isAnalyzingRef.current && payload.complete !== true) return;
+      try {
+        applyDisplaySnapshot(payload);
+      } catch (e) {
+        setStatus(`Analysis display update failed: ${e?.message ?? String(e)}`);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
 
   useEffect(() => {
     return window.nesviz.onMenuSetShowDebugInfo((checked) => {
@@ -140,14 +354,6 @@ export default function App() {
       if (typeof off === 'function') off();
     };
   }, []);
-
-  useEffect(() => {
-    if (!openVectorMenuFamily) return undefined;
-    const onPointerDown = () => setOpenVectorMenuFamily(null);
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [openVectorMenuFamily]);
-
 
   const candidateBlockIdsForRomOff = useMemo(() => {
     const ranges = (blocks || [])
@@ -246,6 +452,21 @@ export default function App() {
     }
   }, [romHash]);
 
+  async function loadActiveRomAnnotationsIntoUi() {
+    const res = await window.nesviz.getActiveLabels();
+
+    if (!res?.ok || !res.hasRom) {
+      setBookmarks([]);
+      setLabelsByRomOff({});
+      setLabelsByAddr({});
+      return;
+    }
+
+    setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
+    setLabelsByRomOff(res.labels && typeof res.labels === 'object' ? res.labels : {});
+    setLabelsByAddr(res.addrLabels && typeof res.addrLabels === 'object' ? res.addrLabels : {});
+  }
+
   async function resolveDisplayAnchorForRomSpan(value) {
     const span = normalizeRomSpanValue(value);
     if (!span) return { ok: false, error: 'No ROM offset available.' };
@@ -280,7 +501,6 @@ export default function App() {
 
   function navigateToBlockId(blockId, focusRomOff = null) {
     if (!blockId) return;
-    setOpenVectorMenuFamily(null);
     setFocusLocation({ blockId, focusRomOff: (typeof focusRomOff === 'number' ? focusRomOff : null) });
   }
 
@@ -422,69 +642,85 @@ export default function App() {
     return Array.isArray(vectorDestinations?.[family]) ? vectorDestinations[family] : [];
   }
 
-  function handleVectorFooterClick(family, event) {
+  function vectorDestinationKey(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    const romOff = typeof entry.romOff === 'number' ? entry.romOff : Number(entry.romOff);
+    const cpuAddr = typeof entry.cpuAddr === 'number' ? entry.cpuAddr : Number(entry.cpuAddr);
+    return `${Number.isFinite(romOff) ? (romOff >>> 0) : 'unknown'}:${Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : 'unknown'}`;
+  }
+
+  function vectorCpuAddr(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    const cpuAddr = typeof entry.cpuAddr === 'number' ? entry.cpuAddr : Number(entry.cpuAddr);
+    if (!Number.isFinite(cpuAddr)) return null;
+    return cpuAddr & 0xffff;
+  }
+
+  function haveSameVectorCpuAddress(entries) {
+    if (!Array.isArray(entries) || entries.length <= 1) return true;
+    const firstCpuAddr = vectorCpuAddr(entries[0]);
+    if (firstCpuAddr === null) return false;
+    return entries.every((entry) => vectorCpuAddr(entry) === firstCpuAddr);
+  }
+
+  function getEffectiveSingleVectorDestination(entries) {
+    if (!Array.isArray(entries) || !entries.length) return null;
+    if (!haveSameVectorCpuAddress(entries)) return null;
+    const cpuAddr = vectorCpuAddr(entries[0]);
+    if (cpuAddr === null) return null;
+    return { entry: entries[0], cpuAddr };
+  }
+
+  function vectorFooterText(label, rawCpuAddr, entries) {
+    const effectiveSingle = getEffectiveSingleVectorDestination(entries);
+    if (effectiveSingle) return `${label}: $${fmtCpu(effectiveSingle.cpuAddr)}`;
+    if (Array.isArray(entries) && entries.length) return `${label}: multiple`;
+    return `${label}: $${fmtCpu(rawCpuAddr)}`;
+  }
+
+  function handleVectorFooterClick(family, label, event) {
     const entries = getVectorDestinationsForFamily(family);
     if (!entries.length) return;
-    if (entries.length === 1) {
-      const entry = entries[0];
-      navigateToRomOffWithHistory(entry.romOff);
+    const effectiveSingle = getEffectiveSingleVectorDestination(entries);
+    if (effectiveSingle) {
+      setVectorPopup(null);
+      navigateToRomOffWithHistory(effectiveSingle.entry.romOff);
       return;
     }
-    if (event) event.stopPropagation();
-    setOpenVectorMenuFamily((prev) => (prev === family ? null : family));
+
+    const rect = event?.currentTarget?.getBoundingClientRect?.();
+    setContextMenu(null);
+    setVectorPopup({
+      family,
+      label,
+      entries,
+      x: rect ? rect.left : 12,
+      y: rect ? rect.top - 8 : 12
+    });
+  }
+
+  function formatVectorPopupBankLabel(entry, index) {
+    const bankIndex = typeof entry?.bankIndex === 'number' ? entry.bankIndex : Number(entry?.bankIndex);
+    if (Number.isFinite(bankIndex)) return `Bank ${bankIndex}`;
+    return `Target ${index + 1}`;
   }
 
   function renderVectorFooterItem(family, label, rawCpuAddr) {
     const entries = getVectorDestinationsForFamily(family);
-    const text = `${label}: $${fmtCpu(rawCpuAddr)}`;
-    const isOpen = openVectorMenuFamily === family;
+    const text = vectorFooterText(label, rawCpuAddr, entries);
     if (!entries.length) {
       return <span className="nv-footer-plain" title="No discovered destination for this vector">{text}</span>;
     }
-    if (entries.length === 1) {
-      return (
-        <button
-          type="button"
-          className="nv-footer-link"
-          onClick={() => handleVectorFooterClick(family)}
-          title="Jump to discovered vector target"
-        >
-          {text}
-        </button>
-      );
-    }
+    const hasPopup = !getEffectiveSingleVectorDestination(entries);
     return (
-      <div className="nv-footer-vector">
-        <button
-          type="button"
-          className="nv-footer-link"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => handleVectorFooterClick(family, event)}
-          title="Show discovered vector destinations"
-          aria-expanded={isOpen ? 'true' : 'false'}
-        >
-          {text}
-        </button>
-        {isOpen ? (
-          <div className="nv-footer-popup" onPointerDown={(event) => event.stopPropagation()}>
-            <div className="nv-footer-popup-title">Discovered destinations</div>
-            {entries.map((entry) => (
-              <button
-                key={`${family}:${entry.romOff}`}
-                type="button"
-                className="nv-footer-popup-link"
-                onClick={() => {
-                  setOpenVectorMenuFamily(null);
-                  navigateToRomOffWithHistory(entry.romOff);
-                }}
-                title={entry.asm || `ROM ${fmtRom(entry.romOff)}`}
-              >
-                {fmtRom(entry.romOff)}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
+      <button
+        type="button"
+        className="nv-footer-link"
+        onClick={(event) => handleVectorFooterClick(family, label, event)}
+        title={hasPopup ? 'Show vector targets by bank' : 'Jump to discovered vector target'}
+      >
+        {text}
+      </button>
     );
   }
 
@@ -598,6 +834,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const unsubAnalyze = window.nesviz.onMenuAnalyze(() => {
+      runStatic();
+    });
     const unsubOpen = window.nesviz.onMenuOpenRom(() => {
       openRom();
     });
@@ -613,6 +852,7 @@ export default function App() {
       setTimeout(() => setStatus(''), 2500);
     });
     return () => {
+      if (typeof unsubAnalyze === 'function') unsubAnalyze();
       if (typeof unsubOpen === 'function') unsubOpen();
       if (typeof unsubOpenRecent === 'function') unsubOpenRecent();
       if (typeof unsubOpenCdl === 'function') unsubOpenCdl();
@@ -623,7 +863,8 @@ export default function App() {
 
   async function loadActiveAnalysisIntoUi(statusPrefix, opts = {}) {
     const requestId = Number.isFinite(opts?.requestId) ? opts.requestId : null;
-    const isStale = () => requestId !== null && openRequestIdRef.current !== requestId;
+    const extraIsStale = typeof opts?.isStale === 'function' ? opts.isStale : null;
+    const isStale = () => (requestId !== null && openRequestIdRef.current !== requestId) || (extraIsStale ? extraIsStale() : false);
 
     const tlRes = await window.nesviz.getTimeline();
     if (isStale()) return false;
@@ -645,31 +886,21 @@ export default function App() {
         })
         .filter(Boolean);
 
-      let built = Array.isArray(tlRes.timeline) && tlRes.timeline.length ? tlRes.timeline : buildViewATimelineFromBlocks(idx);
-
-      // Ultra-defensive fallback: if coercion worked but the timeline builder still yields no code,
-      // show a simple code-only list so we never end up with a blank/only-gap PRG view. 🤖
-      if (built.length === 0 && idx.length) {
-        const sorted = [...idx].sort((a, b) => a.romStart - b.romStart);
-        built = sorted.map((b) => ({
-          type: 'code',
-          blockId: b.id,
-          romStart: b.romStart,
-          romEnd: b.romEnd,
-          byteLen: (b.romEnd - b.romStart) | 0
-        }));
-      }
+      const built = normalizeDisplayTimeline(tlRes.timeline, idx);
 
       const codeCount = built.filter((t) => t.type === 'code').length;
       const dataCount = built.filter((t) => t.type === 'data').length;
       setStatus(`${statusPrefix} Blocks: ${idx.length}. Rendered: ${built.length} items (${codeCount} code, ${dataCount} data).`);
+      timelineRef.current = built;
+      blocksRef.current = idx;
       setTimeline(built);
       setBlocks(idx);
+      setCodeViewResetToken((token) => (token + 1) | 0);
+      setCodeViewUpdate(null);
       setMapper(tlRes.mapper);
       setStats(tlRes.stats);
       setAnalysisDebug(tlRes.debug || null);
       setVectorDestinations((tlRes.vectorDestinationsByFamily && typeof tlRes.vectorDestinationsByFamily === 'object') ? tlRes.vectorDestinationsByFamily : emptyVectorDestinations());
-      setOpenVectorMenuFamily(null);
     }
 
     if (isStale()) return false;
@@ -691,10 +922,9 @@ export default function App() {
     setRomHash(res.romHash || null);
     setVectors(res.vectors);
     setVectorDestinations(emptyVectorDestinations());
-    setOpenVectorMenuFamily(null);
-    setBookmarks(Array.isArray(res.bookmarks) ? res.bookmarks : []);
-    setLabelsByRomOff((res.labels && typeof res.labels === 'object') ? res.labels : {});
-    setLabelsByAddr((res.addrLabels && typeof res.addrLabels === 'object') ? res.addrLabels : {});
+    setBookmarks([]);
+    setLabelsByRomOff({});
+    setLabelsByAddr({});
     setContextMenu(null);
     setLabelModal(null);
     hoveredLineRef.current = null;
@@ -702,13 +932,17 @@ export default function App() {
     setGapBytesByKey({});
     setGapBytesLoadingByKey({});
     setAnalysisDebug(null);
-    setVsaDebugModal(null);
+    setBlockAnalysisDebugModal(null);
+    setCodeViewUpdate(null);
+    setCodeViewResetToken((token) => (token + 1) | 0);
 
     // New ROM => clear navigation history note: in-memory only.
     navStackRef.current = [];
     suppressHistoryPushRef.current = false;
 
     setCdl(null);
+    timelineRef.current = [];
+    blocksRef.current = [];
     setTimeline([]);
     setBlocks([]);
     setMapper(null);
@@ -764,6 +998,14 @@ export default function App() {
       }
 
       applyOpenedRomToUi(res);
+      try {
+        await loadActiveRomAnnotationsIntoUi();
+      } catch (e) {
+        if (openRequestIdRef.current !== requestId) return;
+        setStatus(`ROM loaded, but annotations failed to load: ${e?.message ?? String(e)}`);
+      }
+      if (openRequestIdRef.current !== requestId) return;
+
       if (res.hasCachedAnalysis) {
         void maybeLoadCachedAnalysis(requestId);
       } else {
@@ -822,20 +1064,20 @@ export default function App() {
     }
   }
 
-  async function showVsaForContextMenu(cm) {
+  async function showAnalysisDebugForContextMenu(cm) {
     const blockId = cm?.blockId || null;
     if (!showDebugInfo || !blockId) return;
     setContextMenu(null);
-    setVsaDebugModal({ loading: true, error: '', debug: null });
+    setBlockAnalysisDebugModal({ loading: true, error: '', debug: null });
     try {
-      const res = await window.nesviz.getBlockVsaDebug(blockId);
+      const res = await window.nesviz.getBlockAnalysisDebug(blockId);
       if (!res?.ok) {
-        setVsaDebugModal({ loading: false, error: res?.error || 'VSA debug lookup failed', debug: null });
+        setBlockAnalysisDebugModal({ loading: false, error: res?.error || 'Abstract interpretation debug lookup failed', debug: null });
         return;
       }
-      setVsaDebugModal({ loading: false, error: '', debug: res.debug || null });
+      setBlockAnalysisDebugModal({ loading: false, error: '', debug: res.debug || null });
     } catch (e) {
-      setVsaDebugModal({ loading: false, error: e?.message || String(e), debug: null });
+      setBlockAnalysisDebugModal({ loading: false, error: e?.message || String(e), debug: null });
     }
   }
 
@@ -870,8 +1112,19 @@ export default function App() {
     }
   }
 
+  function showAnalysisLog() {
+    window.nesviz.showAnalysisLog();
+  }
+
+  function onStatusKeyDown(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    showAnalysisLog();
+  }
+
   async function runStatic() {
-    if (!romHash) return;
+    if (!romHashRef.current || isAnalyzingRef.current) return;
+    analysisRunIdRef.current = (analysisRunIdRef.current + 1) | 0;
     setIsAnalyzing(true);
     setIsLoadingCachedAnalysis(false);
     setVsaProgress({ runId: null, totalBlocks: null, maxRatio: 0 });
@@ -887,10 +1140,11 @@ export default function App() {
         return;
       }
 
-      await loadActiveAnalysisIntoUi('Analysis complete.');
+      setStatus(`Analysis complete. Blocks: ${runRes.stats?.blockCount ?? blocksRef.current.length}.`);
     } catch (e) {
       setStatus(`Analysis failed: ${e?.message ?? String(e)}`);
     } finally {
+      analysisRunIdRef.current = (analysisRunIdRef.current + 1) | 0;
       // Hide the progress bar once analysis finishes (success or failure).
       setIsAnalyzing(false);
       setVsaProgress({ runId: null, totalBlocks: null, maxRatio: 0 });
@@ -915,7 +1169,15 @@ export default function App() {
             <span className="nv-meta-item">No ROM loaded</span>
           )}
         </div>
-        <div className="nv-top-status" title={status}>
+        <div
+          className="nv-top-status"
+          title={status || 'Open Analysis Log'}
+          role="button"
+          tabIndex={0}
+          aria-label="Open Analysis Log"
+          onClick={showAnalysisLog}
+          onKeyDown={onStatusKeyDown}
+        >
           {isAnalyzing && vsaProgress.totalBlocks ? (
             <div
               className="nv-top-status-progress"
@@ -949,6 +1211,9 @@ export default function App() {
             analysisDebug={analysisDebug}
             showDebugInfo={showDebugInfo}
             showNamedConstants={showNamedConstants}
+            mapper={mapper}
+            codeViewUpdate={codeViewUpdate}
+            codeViewResetToken={codeViewResetToken}
             apiRef={stackApiRef}
           />
         </section>
@@ -979,12 +1244,45 @@ export default function App() {
           <div className="nv-footer-row">
             {renderVectorFooterItem('nmi', 'NMI', vectors.nmi)}
             {renderVectorFooterItem('reset', 'RESET', vectors.reset)}
-            {renderVectorFooterItem('irq', 'IRQ/BRK', vectors.irqBrk)}
+            {renderVectorFooterItem('irq', 'IRQ', vectors.irqBrk)}
           </div>
         ) : (
           <div className="nv-footer-row nv-footer-muted">Vectors will appear here after loading a ROM.</div>
         )}
       </footer>
+
+
+      {vectorPopup ? (
+        <div
+          className="nv-contextmenu-backdrop"
+          onMouseDown={() => {
+            setVectorPopup(null);
+          }}
+        >
+          <div
+            ref={vectorPopupRef}
+            className="nv-vector-popup"
+            style={{ left: vectorPopup.x, top: vectorPopup.y }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            {(Array.isArray(vectorPopup.entries) ? vectorPopup.entries : []).map((entry, index) => (
+              <button
+                key={`${vectorPopup.family}:${vectorDestinationKey(entry)}:${formatVectorPopupBankLabel(entry, index)}`}
+                type="button"
+                className="nv-vector-popup-item"
+                onClick={() => {
+                  setVectorPopup(null);
+                  navigateToRomOffWithHistory(entry.romOff);
+                }}
+              >
+                {formatVectorPopupBankLabel(entry, index)}: CPU ${fmtCpu(entry.cpuAddr)} · ROM ${fmtRom(entry.romOff)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {contextMenu ? (
         <div
@@ -1086,10 +1384,10 @@ export default function App() {
                     type="button"
                     className="nv-contextmenu-item"
                     onClick={() => {
-                      void showVsaForContextMenu(contextMenu);
+                      void showAnalysisDebugForContextMenu(contextMenu);
                     }}
                   >
-                    Show VSA
+                    Show abstract interpretation
                   </button>
                 </div>
               </div>
@@ -1148,25 +1446,27 @@ export default function App() {
         </div>
       ) : null}
 
-      {vsaDebugModal ? (
+      {blockAnalysisDebugModal ? (
         <div
           className="nv-modal-backdrop"
           onMouseDown={() => {
-            setVsaDebugModal(null);
+            setBlockAnalysisDebugModal(null);
+    setCodeViewUpdate(null);
+    setCodeViewResetToken((token) => (token + 1) | 0);
           }}
         >
           <div
-            className="nv-modal nv-vsa-debug-modal"
+            className="nv-modal nv-analysis-debug-modal"
             onMouseDown={(e) => {
               e.stopPropagation();
             }}
           >
             <div className="nv-modal-header">
               <div>
-                <div className="nv-modal-title">VSA debug</div>
-                {vsaDebugModal.debug ? (
+                <div className="nv-modal-title">Abstract interpretation</div>
+                {blockAnalysisDebugModal.debug ? (
                   <div className="nv-modal-subtitle">
-                    Block {vsaDebugModal.debug.displayBlockId || '—'} · {vsaDebugModal.debug.observationCount || 0} observations
+                    Block {blockAnalysisDebugModal.debug.displayBlockId || '—'} · {blockAnalysisDebugModal.debug.entryCount || 0} entries
                   </div>
                 ) : null}
               </div>
@@ -1174,31 +1474,31 @@ export default function App() {
                 <button
                   type="button"
                   className="nv-btn"
-                  onClick={() => setVsaDebugModal(null)}
+                  onClick={() => setBlockAnalysisDebugModal(null)}
                 >
                   Close
                 </button>
               </div>
             </div>
-            <div className="nv-vsa-debug-body">
-              {vsaDebugModal.loading ? <div className="nv-muted">Loading VSA debug…</div> : null}
-              {vsaDebugModal.error ? <div className="nv-vsa-debug-error">{vsaDebugModal.error}</div> : null}
-              {!vsaDebugModal.loading && !vsaDebugModal.error && vsaDebugModal.debug ? (
-                <div className="nv-vsa-debug-lines">
-                  {(vsaDebugModal.debug.lines || []).map((line) => (
-                    <div key={`${line.romOff}:${line.cpuAddr}`} className="nv-vsa-debug-line">
-                      <div className="nv-vsa-debug-code">
-                        <span className="nv-vsa-debug-rom">{fmtRom(line.romOff)}</span>
-                        <span className="nv-vsa-debug-cpu">${fmtCpu(line.cpuAddr)}</span>
-                        <span className="nv-vsa-debug-asm">{line.asm || ''}</span>
+            <div className="nv-analysis-debug-body">
+              {blockAnalysisDebugModal.loading ? <div className="nv-muted">Loading abstract interpretation debug…</div> : null}
+              {blockAnalysisDebugModal.error ? <div className="nv-analysis-debug-error">{blockAnalysisDebugModal.error}</div> : null}
+              {!blockAnalysisDebugModal.loading && !blockAnalysisDebugModal.error && blockAnalysisDebugModal.debug ? (
+                <div className="nv-analysis-debug-lines">
+                  {(blockAnalysisDebugModal.debug.lines || []).map((line) => (
+                    <div key={`${line.romOff}:${line.cpuAddr}`} className="nv-analysis-debug-line">
+                      <div className="nv-analysis-debug-code">
+                        <span className="nv-analysis-debug-rom">{fmtRom(line.romOff)}</span>
+                        <span className="nv-analysis-debug-cpu">${fmtCpu(line.cpuAddr)}</span>
+                        <span className="nv-analysis-debug-asm">{line.asm || ''}</span>
                       </div>
                       {line.entries?.length ? (
-                        <div className="nv-vsa-debug-entries">
+                        <div className="nv-analysis-debug-entries">
                           {line.entries.map((entry, idx) => (
-                            <div key={entry.id || `${line.romOff}:${idx}`} className="nv-vsa-debug-entry">
-                              <div className="nv-vsa-debug-entry-text">VSA: {entry.text}</div>
+                            <div key={entry.id || `${line.romOff}:${idx}`} className="nv-analysis-debug-entry">
+                              <div className="nv-analysis-debug-entry-text">AI: {entry.text}</div>
                               {entry.details?.length ? (
-                                <div className="nv-vsa-debug-entry-details">{entry.details.join(' · ')}</div>
+                                <div className="nv-analysis-debug-entry-details">{entry.details.join(' · ')}</div>
                               ) : null}
                             </div>
                           ))}

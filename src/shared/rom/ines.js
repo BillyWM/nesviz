@@ -174,7 +174,7 @@ function readVectorsFromPrgBytes(prgBytes) {
   };
 }
 
-// Handy: read the 6502 vectors (NMI/RESET/IRQ+BRK). 🤖
+// Handy: read the 6502 vectors (NMI/RESET/IRQ). 🤖
 // Accepts either an iNES object (from parseInes) or a raw PRG byte slice. 🤖
 export function readVectorsFromLastPrgBank(inesOrPrgBytes) {
   const prgBytes = Buffer.isBuffer(inesOrPrgBytes)

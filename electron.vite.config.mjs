@@ -8,7 +8,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.js'),
-          analysisWorker: resolve('src/main/analysisWorker.js')
+          'analyze2/analysisWorker': resolve('src/main/analyze2/analysisWorker.js')
         }
       }
     }

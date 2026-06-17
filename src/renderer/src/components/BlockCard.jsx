@@ -42,6 +42,79 @@ function promotionEvidenceText(entry) {
   return values.filter((value) => typeof value === 'string' && value).join(', ');
 }
 
+
+function bankVariantKey(variant, idx) {
+  if (variant && typeof variant.blockId === 'string') return variant.blockId;
+  if (variant && typeof variant.romStart === 'number') return `rom:${variant.romStart >>> 0}`;
+  return `idx:${idx}`;
+}
+
+function buildBankVariantSlots(variants) {
+  const variantsByBank = new Map();
+  for (const variant of variants) {
+    if (!variant || !Number.isFinite(variant.bankIndex)) continue;
+    const bankIndex = Math.trunc(variant.bankIndex);
+    if (bankIndex < 0) continue;
+    if (!variantsByBank.has(bankIndex)) variantsByBank.set(bankIndex, variant);
+  }
+
+  const bankIndexes = [...variantsByBank.keys()];
+  if (bankIndexes.length === 0) return [];
+
+  const maxBankIndex = Math.max(...bankIndexes);
+  const slots = [];
+  for (let bankIndex = 0; bankIndex <= maxBankIndex; bankIndex += 1) {
+    slots.push({ bankIndex, variant: variantsByBank.get(bankIndex) || null });
+  }
+  return slots;
+}
+
+function BankVariantSelector({ currentBlockId, bankVariant, bankVariants, onSelectBankVariant }) {
+  if (!bankVariant) return null;
+  const variants = Array.isArray(bankVariants) && bankVariants.length > 0 ? bankVariants : [bankVariant];
+  const slots = buildBankVariantSlots(variants);
+
+  return (
+    <div className="nv-bank-row" aria-label="ROM bank variants">
+      <span className="nv-bank-row-label">Bank</span>
+      <div className="nv-bank-selector">
+        {slots.map(({ bankIndex, variant }) => {
+          if (!variant) {
+            return (
+              <span
+                key={`missing:${bankIndex}`}
+                className="nv-bank-button nv-bank-button-empty"
+                aria-hidden="true"
+              />
+            );
+          }
+
+          const label = typeof variant.bankLabel === 'string' && variant.bankLabel ? variant.bankLabel : String(bankIndex);
+          const isCurrent = variant.blockId === currentBlockId;
+          return (
+            <button
+              key={bankVariantKey(variant, bankIndex)}
+              type="button"
+              className={`nv-bank-button ${isCurrent ? 'is-selected' : ''}`}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!isCurrent && typeof variant.blockId === 'string') {
+                  onSelectBankVariant?.(variant);
+                }
+              }}
+              title={typeof variant.romStart === 'number' ? `Bank ${label} · ROM ${hex6(variant.romStart >>> 0)}` : `Bank ${label}`}
+              aria-current={isCurrent ? 'true' : undefined}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PromotionDebug({ entries }) {
   if (!Array.isArray(entries) || entries.length === 0) return null;
   const showNumbers = entries.length > 1;
@@ -72,17 +145,18 @@ export function BlockCard({
   isFocused,
   markedRomSpan,
   onNavigateToRomOff,
+  onSelectBankVariant,
   labelsByRomOff,
   labelsByAddr,
   showDebugInfo = false,
   showNamedConstants = true,
+  mapper = null,
   onToggleExpanded,
   onHoverLine,
   onContextMenuLine,
   onContextMenuBlock
 }) {
-  const inst = blockIndex?.instances?.[0];
-  const cpuStart = inst?.cpuStart;
+  const cpuStart = blockIndex?.cpuStart;
   const romStart = blockIndex?.romStart ?? item.romStart;
   const romEnd = blockIndex?.romEnd ?? item.romEnd;
   const confidence = normalizeBlockConfidence(blockIndex?.confidence);
@@ -142,6 +216,17 @@ export function BlockCard({
     }
   }
 
+  function onBlockHeaderContextMenu(e) {
+    if (!onContextMenuBlock) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onContextMenuBlock({
+      blockId: item.blockId,
+      romOff: firstLine?.romOff ?? romStart,
+      cpuAddr: firstLine?.cpuAddr ?? cpuStart
+    }, e.clientX, e.clientY);
+  }
+
   return (
     <section
       id={`nv-block-${item.blockId}`}
@@ -153,12 +238,7 @@ export function BlockCard({
         tabIndex={0}
         onClick={onTopRowClick}
         onKeyDown={onTopRowKeyDown}
-        onContextMenu={(e) => {
-          if (!onContextMenuBlock) return;
-          e.preventDefault();
-          e.stopPropagation();
-          onContextMenuBlock({ blockId: item.blockId, romOff: firstLine?.romOff ?? romStart, cpuAddr: firstLine?.cpuAddr ?? cpuStart }, e.clientX, e.clientY);
-        }}
+        onContextMenu={onBlockHeaderContextMenu}
         aria-label={isExpanded ? 'Collapse block' : 'Expand block'}
         title={isExpanded ? 'Collapse' : 'Expand'}
       >
@@ -183,7 +263,14 @@ export function BlockCard({
         </div>
       </div>
 
-      <div className="nv-code-header-extra">
+      <div className="nv-code-header-extra" onContextMenu={onBlockHeaderContextMenu}>
+        <BankVariantSelector
+          currentBlockId={item.blockId}
+          bankVariant={blockIndex?.bankVariant}
+          bankVariants={blockIndex?.bankVariants}
+          onSelectBankVariant={onSelectBankVariant}
+        />
+
         <div className="nv-card-sub">
           <span className="nv-sub-rom">{rangeText(romStart, romEnd)}</span>
           <span className="nv-sub-dot">·</span>
@@ -251,6 +338,7 @@ export function BlockCard({
             labelsByAddr={labelsByAddr}
             showDebugInfo={showDebugInfo}
             showNamedConstants={showNamedConstants}
+            mapper={mapper}
             onNavigateToRomOff={onNavigateToRomOff}
             onHoverLine={onHoverLine}
             onContextMenuLine={onContextMenuLine}

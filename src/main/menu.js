@@ -125,6 +125,31 @@ function buildTemplate({ win, recentRoms }) {
       ]
     },
     {
+      label: 'Analysis',
+      submenu: [
+        {
+          label: 'Analyze',
+          click: () => {
+            if (!win || win.isDestroyed()) return;
+            win.webContents.send('nesviz:menuAnalyze');
+          }
+        },
+        {
+          label: 'Custom Analysis',
+          click: () => {
+            console.log('[NesViz] Custom Analysis is not implemented yet.');
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Analysis Log',
+          click: () => {
+            showAnalysisLogWindow();
+          }
+        }
+      ]
+    },
+    {
       label: 'Connect',
       submenu: [
         {
@@ -146,12 +171,6 @@ function buildTemplate({ win, recentRoms }) {
         currentShowDebugInfo = !!menuItem?.checked;
         if (!win || win.isDestroyed()) return;
         win.webContents.send('nesviz:menuSetShowDebugInfo', { checked: currentShowDebugInfo });
-      }
-    },
-    {
-      label: 'Analysis log',
-      click: () => {
-        showAnalysisLogWindow();
       }
     },
     {

@@ -249,6 +249,10 @@ function infoForMapper34(header) {
   });
 }
 
+function isFixedPrgMmc1(header, submapper) {
+  return submapper === 5 || (header?.prgSize | 0) === 32 * 1024;
+}
+
 function classifyMapperFromHeaderBase(header) {
   const mapperNumber = header?.mapperNumber | 0;
   const submapper = header?.submapperNumber | 0;
@@ -266,17 +270,21 @@ function classifyMapperFromHeaderBase(header) {
         busConflictSource: 'not-applicable'
       });
 
-    case 1:
+    case 1: {
+      const fixedPrg = isFixedPrgMmc1(header, submapper);
       return makeInfo({
         mapperFamily: 'MMC1',
-        boardFamily: submapper === 5 ? 'MMC1-fixed-32k' : 'MMC1',
-        boardName: submapper === 5 ? 'SEROM/SHROM/SH1ROM' : 'MMC1',
+        boardFamily: fixedPrg ? 'MMC1-fixed-32k' : 'MMC1',
+        boardName: fixedPrg
+          ? (submapper === 5 ? 'SEROM/SHROM/SH1ROM' : 'MMC1 32K fixed PRG')
+          : 'MMC1',
         mapperName: 'MMC1',
-        prgWindowModel: submapper === 5 ? 'fixed-32k' : 'mmc1-variable',
-        prgSwapUnitBytes: submapper === 5 ? 0 : null,
+        prgWindowModel: fixedPrg ? 'fixed-32k' : 'mmc1-variable',
+        prgSwapUnitBytes: fixedPrg ? 0 : null,
         busConflicts: 'none',
         busConflictSource: 'family-default'
       });
+    }
 
     case 2: {
       let info = makeInfo({

@@ -1,3 +1,5 @@
+import { ADDRESSING_MODES as AM } from '../../cpu6502/addressingModes.js';
+
 function blockConfidence(block) {
   return block?.confidence === 'probable' ? 'probable' : 'certain';
 }
@@ -95,19 +97,19 @@ export function getMemoryScalarFeaturesForBlock(block) {
     const mode = typeof line?.mode === 'string' ? line.mode : '';
     const bytes = Array.isArray(line?.bytes) ? line.bytes : [];
     switch (mode) {
-      case 'zp':
-      case 'zp_x':
-      case 'zp_y':
+      case AM.ZERO_PAGE:
+      case AM.ZERO_PAGE_X:
+      case AM.ZERO_PAGE_Y:
         zeroPageCount += 1;
         ramCount += 1;
         break;
-      case 'ind_x':
-      case 'ind_y':
+      case AM.INDIRECT_X:
+      case AM.INDIRECT_Y:
         zeroPageCount += 1;
         ramCount += 1;
         indirectCount += 1;
         break;
-      case 'ind': {
+      case AM.INDIRECT: {
         indirectCount += 1;
         const classes = classifyAbsoluteCpuTarget(u16le(bytes, 1));
         zeroPageCount += classes.zeroPage;
@@ -116,9 +118,9 @@ export function getMemoryScalarFeaturesForBlock(block) {
         mapperRomCount += classes.mapperRom;
         break;
       }
-      case 'abs':
-      case 'abs_x':
-      case 'abs_y': {
+      case AM.ABSOLUTE:
+      case AM.ABSOLUTE_X:
+      case AM.ABSOLUTE_Y: {
         const classes = classifyAbsoluteCpuTarget(u16le(bytes, 1));
         zeroPageCount += classes.zeroPage;
         ramCount += classes.ram;

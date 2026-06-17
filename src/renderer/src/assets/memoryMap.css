@@ -214,16 +214,26 @@
   white-space: nowrap;
 }
 
-.memory-map-annotation-functions {
+.memory-map-annotation-groups {
   margin-top: 4px;
   color: var(--memory-map-text-muted);
 }
 
-.memory-map-annotation-functions-label {
+.memory-map-annotation-group-label {
   color: var(--memory-map-text);
 }
 
-.memory-map-annotation-function {
+.memory-map-annotation-note {
+  margin-top: 3px;
+  color: var(--memory-map-text-muted);
+}
+
+.memory-map-annotation-group {
+  margin-top: 4px;
+  color: var(--memory-map-text-muted);
+}
+
+.memory-map-annotation-link {
   display: inline-block;
   border: 0;
   padding: 0;
@@ -234,12 +244,12 @@
   cursor: pointer;
 }
 
-.memory-map-annotation-function:hover {
+.memory-map-annotation-link:hover {
   color: #ffffff;
   text-decoration: underline;
 }
 
-.memory-map-annotation-function:disabled {
+.memory-map-annotation-link:disabled {
   cursor: default;
   color: var(--memory-map-text-muted);
   text-decoration: none;
@@ -251,7 +261,7 @@
   margin: 7px 0;
 }
 
-.memory-map-annotation-function-more {
+.memory-map-annotation-link-more {
   display: inline;
   border: 0;
   padding: 0;
@@ -263,11 +273,11 @@
   cursor: pointer;
 }
 
-.memory-map-annotation-function-more:hover {
+.memory-map-annotation-link-more:hover {
   color: #ffffff;
 }
 
-.memory-map-annotation-function-more--ellipsis {
+.memory-map-annotation-link-more--ellipsis {
   text-decoration: none;
   font-weight: 700;
 }

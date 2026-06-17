@@ -36,6 +36,20 @@ Built in Electron - runnable on Windows, Mac, or Linux
 		* Formatted exports (Markdown, HTML)
 		* "Info-only", bring-your-own-ROM data file with web viewer
 
+## Changes in 0.6
+
+* Detect and display banked code
+	* Code blocks now show a bank selector when multiple versions are detected across banks
+* Overhauled analysis engine
+* Analysis phases and phase groups
+* Analysis log with detailed breakdown while running
+* New in analysis:
+	* Detect the "RTS trick"
+	* "Excavate" common procedure shapes to jump-start code discovery
+* Remove probable code discovery
+* Temporarily broken:
+	* Graph view.
+
 ## Changes in 0.5
 
 * Code cleanup

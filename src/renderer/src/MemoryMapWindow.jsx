@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fmtHex } from '../../shared/utils/numberUtils.js';
 
 const SECTION_GAP = 18;
-const FUNCTION_PREVIEW_COUNT = 20;
-const FUNCTION_EXPANDED_COUNT = 24;
+const LINK_PREVIEW_COUNT = 20;
+const LINK_EXPANDED_COUNT = 24;
 
 
 function buildRows(sizeBytes, occupiedRanges, annotationRanges, rowWidthBytes) {
@@ -138,7 +138,7 @@ function buildRowsForSection(sizeBytes, occupiedRanges, annotationRanges, rowWid
 
 function rangeWidth(range) {
   if (range?.space === 'zp') return 2;
-  if (range?.space === 'rom') return 6;
+  if (range?.space === 'prg') return 6;
   return 4;
 }
 
@@ -153,15 +153,50 @@ function formatRange(range) {
   return `$${fmtHex(start, width)}-$${fmtHex(end, width)}`;
 }
 
-function functionSort(a, b) {
-  const ar = typeof a.romStart === 'number' ? a.romStart : Number.MAX_SAFE_INTEGER;
-  const br = typeof b.romStart === 'number' ? b.romStart : Number.MAX_SAFE_INTEGER;
+function linkSort(a, b) {
+  const ar = typeof a.romOff === 'number' ? a.romOff : Number.MAX_SAFE_INTEGER;
+  const br = typeof b.romOff === 'number' ? b.romOff : Number.MAX_SAFE_INTEGER;
   return ar - br || String(a.label || '').localeCompare(String(b.label || '')) || String(a.id || '').localeCompare(String(b.id || ''));
 }
 
 function sectionKey(section) {
   const range = section?.range || {};
-  return `${range.space}:${range.start}:${range.end}:${section?.label || ''}`;
+  return `${range.space}:${range.start}:${range.end}:${section?.label || ''}:${section?.note || ''}`;
+}
+
+function mergeLinks(a, b) {
+  const byKey = new Map();
+  for (const link of [...(a || []), ...(b || [])]) {
+    const key = [
+      link.kind || '',
+      typeof link.romOff === 'number' ? link.romOff : '',
+      typeof link.cpuAddr === 'number' ? link.cpuAddr : '',
+      link.siteKey || '',
+      link.contextKey || '',
+      link.label || ''
+    ].join(':');
+    if (!byKey.has(key)) byKey.set(key, link);
+  }
+  return Array.from(byKey.values()).sort(linkSort);
+}
+
+function mergeUseGroups(groups) {
+  const byKind = new Map();
+  for (const group of Array.isArray(groups) ? groups : []) {
+    if (!group || typeof group !== 'object') continue;
+    const kind = String(group.kind || 'links');
+    let merged = byKind.get(kind);
+    if (!merged) {
+      merged = {
+        kind,
+        label: String(group.label || kind),
+        links: []
+      };
+      byKind.set(kind, merged);
+    }
+    merged.links = mergeLinks(merged.links, Array.isArray(group.links) ? group.links : []);
+  }
+  return Array.from(byKind.values()).filter((group) => group.links.length);
 }
 
 function buildPopupSections(annotationIds, annotationsById) {
@@ -170,107 +205,86 @@ function buildPopupSections(annotationIds, annotationsById) {
     const annotation = annotationsById.get(id);
     if (!annotation) continue;
     const range = annotation.range || {};
-    const key = `${range.space}:${range.start}:${range.end}:${annotation.label}`;
+    const key = `${range.space}:${range.start}:${range.end}:${annotation.label}:${annotation.note || ''}`;
     let section = byKey.get(key);
     if (!section) {
       section = {
         label: annotation.label,
+        note: annotation.note || '',
         range,
-        functionsByRomStart: new Map()
+        useGroups: []
       };
       byKey.set(key, section);
     }
-    for (const fn of annotation.functions || []) {
-      if (typeof fn?.romStart !== 'number') continue;
-      const romStart = fn.romStart >>> 0;
-      const prev = section.functionsByRomStart.get(romStart);
-      const useSites = Array.isArray(fn.useSites) ? fn.useSites : [];
-      if (prev) {
-        const bySite = new Map(prev.useSites.map((site) => [
-          `${site.romOff}:${site.rawBlockId || ''}:${site.traceId || ''}:${site.observationId || ''}`,
-          site
-        ]));
-        for (const site of useSites) {
-          bySite.set(`${site.romOff}:${site.rawBlockId || ''}:${site.traceId || ''}:${site.observationId || ''}`, site);
-        }
-        prev.useSites = Array.from(bySite.values()).sort((a, b) => (a.romOff - b.romOff));
-        prev.primaryUseSiteRomOff = prev.useSites[0]?.romOff ?? null;
-        continue;
-      }
-      section.functionsByRomStart.set(romStart, {
-        id: String(fn.id || romStart),
-        romStart,
-        label: String(fn.label || ''),
-        useSites,
-        primaryUseSiteRomOff: typeof fn.primaryUseSiteRomOff === 'number'
-          ? (fn.primaryUseSiteRomOff >>> 0)
-          : (useSites[0]?.romOff ?? null)
-      });
-    }
+    section.useGroups = mergeUseGroups([...(section.useGroups || []), ...(annotation.useGroups || [])]);
   }
 
   return Array.from(byKey.values())
-    .map((section) => ({
-      ...section,
-      functions: Array.from(section.functionsByRomStart.values()).sort(functionSort)
-    }))
     .sort((a, b) => (a.range?.start ?? 0) - (b.range?.start ?? 0)
       || (a.range?.end ?? 0) - (b.range?.end ?? 0)
       || String(a.label).localeCompare(String(b.label)));
 }
 
-function visibleFunctions(functions, expansionMode) {
-  if (expansionMode === 'all') return functions;
-  if (expansionMode === 'expanded') return functions.slice(0, FUNCTION_EXPANDED_COUNT);
-  return functions.slice(0, FUNCTION_PREVIEW_COUNT);
+function visibleLinks(links, expansionMode) {
+  if (expansionMode === 'all') return links;
+  if (expansionMode === 'expanded') return links.slice(0, LINK_EXPANDED_COUNT);
+  return links.slice(0, LINK_PREVIEW_COUNT);
 }
 
-function FunctionList({ section, expansionMode, onSetExpansion, onNavigateFunction }) {
-  if (!section.functions.length) return null;
-  const visible = visibleFunctions(section.functions, expansionMode);
-  const hiddenCount = section.functions.length - visible.length;
+function UseGroupList({ sectionKeyValue, groups, expansionByGroup, onSetExpansion, onNavigateLink }) {
+  if (!Array.isArray(groups) || !groups.length) return null;
   return (
-    <div className="memory-map-annotation-functions">
-      <span className="memory-map-annotation-functions-label">Functions:</span>{' '}
-      {visible.map((fn) => (
-        <button
-          key={fn.romStart}
-          type="button"
-          className="memory-map-annotation-function"
-          onClick={(event) => {
-            event.stopPropagation();
-            onNavigateFunction(fn);
-          }}
-          title={typeof fn.primaryUseSiteRomOff === 'number' ? `Jump to use site ROM+0x${fmtHex(fn.primaryUseSiteRomOff, 6)}` : 'Missing use-site target'}
-          disabled={typeof fn.primaryUseSiteRomOff !== 'number'}
-        >
-          {fn.label}
-        </button>
-      ))}
-      {hiddenCount > 0 && expansionMode === 'expanded' ? (
-        <button
-          type="button"
-          className="memory-map-annotation-function-more"
-          onClick={() => onSetExpansion('all')}
-        >
-          show {hiddenCount} more
-        </button>
-      ) : null}
-      {hiddenCount > 0 && expansionMode !== 'expanded' ? (
-        <button
-          type="button"
-          className="memory-map-annotation-function-more memory-map-annotation-function-more--ellipsis"
-          onClick={() => onSetExpansion('expanded')}
-          aria-label="Show more functions"
-        >
-          …
-        </button>
-      ) : null}
+    <div className="memory-map-annotation-groups">
+      {groups.map((group) => {
+        const groupKey = `${sectionKeyValue}:${group.kind}`;
+        const expansionMode = expansionByGroup[groupKey] || 'preview';
+        const visible = visibleLinks(group.links, expansionMode);
+        const hiddenCount = group.links.length - visible.length;
+        return (
+          <div key={groupKey} className="memory-map-annotation-group">
+            <span className="memory-map-annotation-group-label">{group.label}:</span>{' '}
+            {visible.map((link, index) => (
+              <button
+                key={`${link.kind || 'link'}:${link.romOff ?? ''}:${link.cpuAddr ?? ''}:${link.siteKey || ''}:${index}`}
+                type="button"
+                className="memory-map-annotation-link"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onNavigateLink(link);
+                }}
+                title={typeof link.romOff === 'number' ? `Jump to ROM+0x${fmtHex(link.romOff, 6)}` : 'Missing navigation target'}
+                disabled={typeof link.romOff !== 'number'}
+              >
+                {link.label}
+              </button>
+            ))}
+            {hiddenCount > 0 && expansionMode === 'expanded' ? (
+              <button
+                type="button"
+                className="memory-map-annotation-link-more"
+                onClick={() => onSetExpansion(groupKey, 'all')}
+              >
+                show {hiddenCount} more
+              </button>
+            ) : null}
+            {hiddenCount > 0 && expansionMode !== 'expanded' ? (
+              <button
+                type="button"
+                className="memory-map-annotation-link-more memory-map-annotation-link-more--ellipsis"
+                onClick={() => onSetExpansion(groupKey, 'expanded')}
+                aria-label={`Show more ${group.label}`}
+              >
+                …
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function AnnotationPopup({ popup, annotationsById, functionExpansionBySection, onSetFunctionExpansion, onNavigateFunction }) {
+function AnnotationPopup({ popup, annotationsById, linkExpansionByGroup, onSetLinkExpansion, onNavigateLink }) {
   if (!popup) return null;
   const sections = buildPopupSections(popup.annotationIds, annotationsById);
   if (!sections.length) return null;
@@ -288,11 +302,13 @@ function AnnotationPopup({ popup, annotationsById, functionExpansionBySection, o
             <div className="memory-map-annotation-title">
               {formatRange(section.range)}: {section.label}
             </div>
-            <FunctionList
-              section={section}
-              expansionMode={functionExpansionBySection[key] || 'preview'}
-              onSetExpansion={(mode) => onSetFunctionExpansion(key, mode)}
-              onNavigateFunction={onNavigateFunction}
+            {section.note ? <div className="memory-map-annotation-note">{section.note}</div> : null}
+            <UseGroupList
+              sectionKeyValue={key}
+              groups={section.useGroups}
+              expansionByGroup={linkExpansionByGroup}
+              onSetExpansion={onSetLinkExpansion}
+              onNavigateLink={onNavigateLink}
             />
           </div>
         );
@@ -367,7 +383,7 @@ export default function MemoryMapWindow() {
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('');
   const [annotationPopup, setAnnotationPopup] = useState(null);
-  const [functionExpansionBySection, setFunctionExpansionBySection] = useState({});
+  const [linkExpansionByGroup, setLinkExpansionByGroup] = useState({});
 
   const reload = useCallback(async () => {
     setStatus('');
@@ -379,7 +395,7 @@ export default function MemoryMapWindow() {
       }
       setData(res);
       setAnnotationPopup(null);
-      setFunctionExpansionBySection({});
+      setLinkExpansionByGroup({});
     } catch (e) {
       setStatus(`Failed to load memory map: ${e?.message ?? String(e)}`);
     }
@@ -400,7 +416,7 @@ export default function MemoryMapWindow() {
 
   const annotationsById = useMemo(() => {
     const map = new Map();
-    for (const annotation of Array.isArray(data?.mapAnnotations) ? data.mapAnnotations : []) {
+    for (const annotation of Array.isArray(data?.rangeAnnotations) ? data.rangeAnnotations : []) {
       if (typeof annotation?.id === 'string' && annotation.id) map.set(annotation.id, annotation);
     }
     return map;
@@ -410,7 +426,7 @@ export default function MemoryMapWindow() {
     event.stopPropagation();
     const ids = Array.from(new Set((annotationIds || []).filter(Boolean)));
     if (!ids.length) return;
-    setFunctionExpansionBySection({});
+    setLinkExpansionByGroup({});
     setAnnotationPopup({
       x: event.clientX + 8,
       y: event.clientY + 8,
@@ -418,15 +434,15 @@ export default function MemoryMapWindow() {
     });
   }, []);
 
-  const handleSetFunctionExpansion = useCallback((key, mode) => {
-    setFunctionExpansionBySection((prev) => ({
+  const handleSetLinkExpansion = useCallback((key, mode) => {
+    setLinkExpansionByGroup((prev) => ({
       ...prev,
       [key]: mode
     }));
   }, []);
 
-  const handleNavigateFunction = useCallback((fn) => {
-    const romOff = Number(fn?.primaryUseSiteRomOff);
+  const handleNavigateLink = useCallback((link) => {
+    const romOff = Number(link?.romOff);
     if (!Number.isInteger(romOff) || romOff < 0) return;
     window.nesviz.memoryMapNavigate({ kind: 'rom', romOff: romOff >>> 0 });
   }, []);
@@ -532,9 +548,9 @@ export default function MemoryMapWindow() {
       <AnnotationPopup
         popup={annotationPopup}
         annotationsById={annotationsById}
-        functionExpansionBySection={functionExpansionBySection}
-        onSetFunctionExpansion={handleSetFunctionExpansion}
-        onNavigateFunction={handleNavigateFunction}
+        linkExpansionByGroup={linkExpansionByGroup}
+        onSetLinkExpansion={handleSetLinkExpansion}
+        onNavigateLink={handleNavigateLink}
       />
     </div>
   );

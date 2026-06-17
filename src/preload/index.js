@@ -59,11 +59,12 @@ contextBridge.exposeInMainWorld('nesviz', {
   loadActiveAnalysisCache: () => ipcRenderer.invoke('nesviz:loadActiveAnalysisCache'),
   getTimeline: () => ipcRenderer.invoke('nesviz:getTimeline'),
   getBlock: (blockId) => ipcRenderer.invoke('nesviz:getBlock', { blockId }),
-  getBlockVsaDebug: (blockId) => ipcRenderer.invoke('nesviz:getBlockVsaDebug', { blockId }),
+  getBlockAnalysisDebug: (blockId) => ipcRenderer.invoke('nesviz:getBlockAnalysisDebug', { blockId }),
   getBlocks: (blockIds) => ipcRenderer.invoke('nesviz:getBlocks', { blockIds }),
   getArtifacts: () => ipcRenderer.invoke('nesviz:getArtifacts'),
   getPrgBytes: (romStart, romEnd) => ipcRenderer.invoke('nesviz:getPrgBytes', { romStart, romEnd }),
-  getAnalysisLog: () => ipcRenderer.invoke('nesviz:getAnalysisLog'),
+  showAnalysisLog: () => ipcRenderer.invoke('nesviz:showAnalysisLog'),
+  getAnalysisLogOutline: () => ipcRenderer.invoke('nesviz:getAnalysisLogOutline'),
   copyText: (text) => ipcRenderer.invoke('nesviz:copyText', { text }),
   getMemoryMapData: () => ipcRenderer.invoke('nesviz:getMemoryMapData'),
   getHeatmapData: () => ipcRenderer.invoke('nesviz:getHeatmapData'),
@@ -115,6 +116,12 @@ contextBridge.exposeInMainWorld('nesviz', {
   }),
 
   // Menu event hooks
+  onMenuAnalyze: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('nesviz:menuAnalyze', listener);
+    return () => ipcRenderer.removeListener('nesviz:menuAnalyze', listener);
+  },
+
   onMenuOpenRom: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('nesviz:menuOpenRom', listener);
@@ -158,11 +165,12 @@ contextBridge.exposeInMainWorld('nesviz', {
     return () => ipcRenderer.removeListener('nesviz:menuSetShowNamedConstants', listener);
   },
 
-  onAnalysisLogUpdated: (callback) => {
+  onAnalysisDisplayUpdated: (callback) => {
     const listener = (_evt, payload) => callback(payload);
-    ipcRenderer.on('nesviz:analysisLogUpdated', listener);
-    return () => ipcRenderer.removeListener('nesviz:analysisLogUpdated', listener);
+    ipcRenderer.on('nesviz:analysisDisplayUpdated', listener);
+    return () => ipcRenderer.removeListener('nesviz:analysisDisplayUpdated', listener);
   },
+
 
   onMemoryMapDataChanged: (callback) => {
     const listener = () => callback();

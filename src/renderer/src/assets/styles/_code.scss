@@ -74,6 +74,24 @@
   background: rgba(59, 130, 246, 0.20);
 }
 
+.nv-line.is-dead-code {
+  background: rgba(55, 65, 81, 0.24);
+}
+
+.nv-line.is-dead-code:hover {
+  background: rgba(55, 65, 81, 0.32);
+}
+
+.nv-line.is-dead-control-flow .nv-col-asm {
+  text-decoration-line: line-through;
+  text-decoration-thickness: 2px;
+}
+
+.nv-line.is-dead-control-flow .nv-asm-link {
+  text-decoration-line: underline line-through;
+  text-decoration-thickness: 2px;
+}
+
 .nv-col-romoff {
   color: $muted-2 !important;
 }
@@ -255,11 +273,11 @@
   display: block;
 }
 
-.nv-vsa-debug-modal {
+.nv-analysis-debug-modal {
   width: min(1100px, 96vw);
 }
 
-.nv-vsa-debug-body {
+.nv-analysis-debug-body {
   overflow: auto;
   padding: 12px;
   @include monospace;
@@ -267,7 +285,7 @@
   line-height: 1.35;
 }
 
-.nv-vsa-debug-error {
+.nv-analysis-debug-error {
   color: #b91c1c;
   background: rgba(185, 28, 28, 0.08);
   border: 1px solid rgba(185, 28, 28, 0.25);
@@ -275,53 +293,86 @@
   padding: 10px 12px;
 }
 
-.nv-vsa-debug-lines {
+.nv-analysis-debug-lines {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.nv-vsa-debug-line {
+.nv-analysis-debug-line {
   border-bottom: 1px solid $muted-bg-2;
   padding: 5px 0;
 }
 
-.nv-vsa-debug-code {
+.nv-analysis-debug-code {
   display: grid;
   grid-template-columns: 78px 70px 1fr;
   gap: 10px;
   align-items: baseline;
 }
 
-.nv-vsa-debug-rom,
-.nv-vsa-debug-cpu {
+.nv-analysis-debug-rom,
+.nv-analysis-debug-cpu {
   color: $muted;
 }
 
-.nv-vsa-debug-asm {
+.nv-analysis-debug-asm {
   color: $text-strong;
 }
 
-.nv-vsa-debug-entries {
+.nv-analysis-debug-entries {
   margin: 4px 0 0 158px;
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.nv-vsa-debug-entry {
+.nv-analysis-debug-entry {
   color: $muted;
   background: $muted-bg;
   border-radius: 6px;
   padding: 4px 6px;
 }
 
-.nv-vsa-debug-entry-text {
+.nv-analysis-debug-entry-text {
   color: $text;
 }
 
-.nv-vsa-debug-entry-details {
+.nv-analysis-debug-entry-details {
   margin-top: 2px;
   color: $muted-2;
   font-size: 11px;
+}
+
+.nv-vector-popup {
+  position: fixed;
+  width: max-content;
+  min-width: 260px;
+  max-width: min(360px, calc(100vw - 24px));
+  background: $panel-bg;
+  border: 1px solid $border;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.nv-vector-popup-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: $text-strong;
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nv-vector-popup-item:hover {
+  background: $muted-bg;
 }

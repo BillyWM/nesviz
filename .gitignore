@@ -1,4 +1,7 @@
+# Both used for exchanging code with GPT
 nes*.zip
+*.patch
+
 node_modules
 dist
 out

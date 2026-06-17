@@ -5,6 +5,19 @@ import { BlockCard } from './BlockCard.jsx';
 import { hex4 } from '../util/hex.js';
 import { GapCard } from './GapCard.jsx';
 
+function isVisibleTimelineItem(item, blocksById) {
+  if (!item || item.type !== 'code' || !item.blockId) return true;
+  const blockIndex = blocksById?.get?.(item.blockId);
+  const anchorBlockId = blockIndex?.bankVariantAnchorBlockId;
+  return !anchorBlockId || anchorBlockId === item.blockId;
+}
+
+function anchorBlockIdForBlock(blockId, blocksById) {
+  if (!blockId) return null;
+  const blockIndex = blocksById?.get?.(blockId);
+  return blockIndex?.bankVariantAnchorBlockId || blockId;
+}
+
 export function BlockStack({
   timeline,
   blocksById,
@@ -25,18 +38,23 @@ export function BlockStack({
   analysisDebug,
   showDebugInfo = false,
   showNamedConstants = true,
+  mapper = null,
+  codeViewUpdate = null,
+  codeViewResetToken = 0,
   apiRef
 }) {
   const [expandedById, setExpandedById] = useState({});
   const [loadingById, setLoadingById] = useState({});
   const [blockCache, setBlockCache] = useState({});
+  const [bankVariantSelectionByAnchorId, setBankVariantSelectionByAnchorId] = useState({});
   const [flashId, setFlashId] = useState(null);
 
   const prefetchSeenRef = useRef(new Set());
   const parentRef = useRef(null);
 
-  const codeItems = useMemo(() => timeline.filter((t) => t.type === 'code'), [timeline]);
-  const hasAny = timeline && timeline.length > 0;
+  const visibleTimeline = useMemo(() => timeline.filter((item) => isVisibleTimelineItem(item, blocksById)), [timeline, blocksById]);
+  const codeItems = useMemo(() => visibleTimeline.filter((t) => t.type === 'code'), [visibleTimeline]);
+  const hasAny = visibleTimeline && visibleTimeline.length > 0;
   const hasCode = codeItems.length > 0;
 
 
@@ -47,7 +65,7 @@ export function BlockStack({
 
   function findPrevCodeItem(index) {
     for (let i = index - 1; i >= 0; i -= 1) {
-      const it = timeline[i];
+      const it = visibleTimeline[i];
       if (it?.type === 'code') return it;
     }
     return null;
@@ -122,28 +140,33 @@ export function BlockStack({
 
   const blockIdToTimelineIndex = useMemo(() => {
     const m = new Map();
-    for (let i = 0; i < timeline.length; i++) {
-      const it = timeline[i];
-      if (it?.type === 'code' && it.blockId) {
-        m.set(it.blockId, i);
+    for (let i = 0; i < visibleTimeline.length; i++) {
+      const it = visibleTimeline[i];
+      if (it?.type !== 'code' || !it.blockId) continue;
+      m.set(it.blockId, i);
+      const blockIndex = blocksById.get(it.blockId);
+      const variants = Array.isArray(blockIndex?.bankVariants) ? blockIndex.bankVariants : [];
+      for (const variant of variants) {
+        if (typeof variant?.blockId === 'string') m.set(variant.blockId, i);
       }
     }
     return m;
-  }, [timeline]);
+  }, [visibleTimeline, blocksById]);
 
   const rowVirtualizer = useVirtualizer({
-    count: timeline.length,
+    count: visibleTimeline.length,
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => {
-      const it = timeline[index];
+      const it = visibleTimeline[index];
       if (!it) return 160;
       // Rough estimates; dynamic heights are measured via measureElement.
       return it.type === 'code' ? 260 : 70;
     },
     overscan: 10,
     getItemKey: (index) => {
-      const it = timeline[index];
+      const it = visibleTimeline[index];
       if (!it) return `idx:${index}`;
+      if (it.rowKey) return it.rowKey;
       if (it.type === 'code') return `code:${it.blockId}`;
       return `gap:${it.type}:${it.romStart}:${it.romEnd}`;
     }
@@ -177,13 +200,13 @@ export function BlockStack({
 
       // Prefer a code item; if this is a gap row, pick the nearest code row after it.
       let idx = candidate.index;
-      while (idx < timeline.length && timeline[idx]?.type !== 'code') idx++;
-      if (idx >= timeline.length) {
+      while (idx < visibleTimeline.length && visibleTimeline[idx]?.type !== 'code') idx++;
+      if (idx >= visibleTimeline.length) {
         idx = candidate.index;
-        while (idx >= 0 && timeline[idx]?.type !== 'code') idx--;
+        while (idx >= 0 && visibleTimeline[idx]?.type !== 'code') idx--;
       }
-      const it = idx >= 0 ? timeline[idx] : null;
-      return it?.type === 'code' ? it.blockId : null;
+      const it = idx >= 0 ? visibleTimeline[idx] : null;
+      return it?.type === 'code' ? (bankVariantSelectionByAnchorId[it.blockId] || it.blockId) : null;
     };
 
     return () => {
@@ -192,19 +215,59 @@ export function BlockStack({
       }
     };
     // We want the closure to see fresh timeline + virtualizer.
-  }, [apiRef, rowVirtualizer, timeline]);
+  }, [apiRef, rowVirtualizer, visibleTimeline, bankVariantSelectionByAnchorId]);
+
+  async function prefetchBlockIds(blockIds, isCancelled) {
+    const uniqueIds = [];
+    for (const blockId of blockIds || []) {
+      if (!blockId) continue;
+      if (prefetchSeenRef.current.has(blockId)) continue;
+      prefetchSeenRef.current.add(blockId);
+      uniqueIds.push(blockId);
+    }
+
+    const CHUNK = 100;
+    for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+      if (isCancelled()) return;
+      const batch = uniqueIds.slice(i, i + CHUNK);
+
+      setLoadingById((p) => {
+        const n = { ...p };
+        for (const id of batch) n[id] = true;
+        return n;
+      });
+
+      try {
+        const res = await window.nesviz.getBlocks(batch);
+        if (isCancelled()) return;
+        if (res.ok && Array.isArray(res.blocks)) {
+          setBlockCache((p) => {
+            const n = { ...p };
+            for (const b of res.blocks) {
+              if (b?.id) n[b.id] = b;
+            }
+            return n;
+          });
+        }
+      } finally {
+        setLoadingById((p) => {
+          const n = { ...p };
+          for (const id of batch) delete n[id];
+          return n;
+        });
+      }
+    }
+  }
 
   useEffect(() => {
-    // After a new analysis run, default to expanded blocks and prefetch full block lines. 🤖
-    // The previewLines can be empty depending on backend shaping; full blocks are authoritative. 🤖
+    // Full reset path for new ROM/cache/full loads. Incremental analysis snapshots use codeViewUpdate below.
     if (!hasCode) return;
 
-    // Reset caches when the timeline changes (new analysis). 🤖
     prefetchSeenRef.current = new Set();
     setBlockCache({});
     setLoadingById({});
+    setBankVariantSelectionByAnchorId({});
 
-    // Expand everything by default (user can collapse if desired). 🤖
     setExpandedById(() => {
       const next = {};
       for (const it of codeItems) next[it.blockId] = true;
@@ -212,54 +275,64 @@ export function BlockStack({
     });
 
     let cancelled = false;
-    (async () => {
-      const allIds = [];
-      for (const it of codeItems) {
-        const blockId = it.blockId;
-        if (!blockId) continue;
-        if (prefetchSeenRef.current.has(blockId)) continue;
-        prefetchSeenRef.current.add(blockId);
-        allIds.push(blockId);
-      }
-
-      // Fetch blocks in batches to reduce IPC overhead while still eagerly loading all data. 🤖
-      const CHUNK = 100;
-      for (let i = 0; i < allIds.length; i += CHUNK) {
-        if (cancelled) return;
-        const batch = allIds.slice(i, i + CHUNK);
-
-        setLoadingById((p) => {
-          const n = { ...p };
-          for (const id of batch) n[id] = true;
-          return n;
-        });
-
-        try {
-          const res = await window.nesviz.getBlocks(batch);
-          if (cancelled) return;
-          if (res.ok && Array.isArray(res.blocks)) {
-            setBlockCache((p) => {
-              const n = { ...p };
-              for (const b of res.blocks) {
-                if (b?.id) n[b.id] = b;
-              }
-              return n;
-            });
-          }
-        } finally {
-          setLoadingById((p) => {
-            const n = { ...p };
-            for (const id of batch) delete n[id];
-            return n;
-          });
-        }
-      }
-    })();
-
+    void prefetchBlockIds(codeItems.map((it) => it.blockId), () => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [hasCode, codeItems]);
+    // Full resets are explicit; normal timeline changes are handled incrementally below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codeViewResetToken]);
+
+  useEffect(() => {
+    const revision = Number(codeViewUpdate?.revision);
+    if (!Number.isFinite(revision)) return;
+
+    const removed = new Set(Array.isArray(codeViewUpdate.removedBlockIds) ? codeViewUpdate.removedBlockIds : []);
+    const changed = new Set(Array.isArray(codeViewUpdate.changedBlockIds) ? codeViewUpdate.changedBlockIds : []);
+    const added = new Set(Array.isArray(codeViewUpdate.addedBlockIds) ? codeViewUpdate.addedBlockIds : []);
+    const staleIds = new Set([...removed, ...changed]);
+
+    for (const id of staleIds) prefetchSeenRef.current.delete(id);
+
+    setBlockCache((prev) => {
+      const next = { ...prev };
+      for (const id of staleIds) delete next[id];
+      return next;
+    });
+    setLoadingById((prev) => {
+      const next = { ...prev };
+      for (const id of staleIds) delete next[id];
+      return next;
+    });
+    setExpandedById((prev) => {
+      const next = { ...prev };
+      for (const id of removed) delete next[id];
+      for (const id of added) {
+        if (!(id in next)) next[id] = true;
+      }
+      return next;
+    });
+    setBankVariantSelectionByAnchorId((prev) => {
+      const next = {};
+      for (const [anchorId, selectedId] of Object.entries(prev || {})) {
+        const anchor = blocksById.get(anchorId);
+        if (!anchor) continue;
+        if (selectedId && blocksById.has(selectedId)) {
+          next[anchorId] = selectedId;
+        } else {
+          next[anchorId] = anchorId;
+        }
+      }
+      return next;
+    });
+
+    let cancelled = false;
+    void prefetchBlockIds([...added, ...changed], () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codeViewUpdate?.revision]);
 
   async function ensureBlockLoaded(blockId) {
     if (!blockId) return;
@@ -282,18 +355,39 @@ export function BlockStack({
     setExpandedById((p) => ({ ...p, [blockId]: value }));
   }
 
+  function byteLenForBlockIndex(blockIndex, fallbackItem) {
+    if (blockIndex && typeof blockIndex.romStart === 'number' && typeof blockIndex.romEnd === 'number') {
+      return (blockIndex.romEnd - blockIndex.romStart) | 0;
+    }
+    return fallbackItem?.byteLen || 0;
+  }
+
+  function selectBankVariant(anchorBlockId, variant) {
+    if (!anchorBlockId || !variant || typeof variant.blockId !== 'string') return;
+    setBankVariantSelectionByAnchorId((p) => ({ ...p, [anchorBlockId]: variant.blockId }));
+    if (expandedById[anchorBlockId]) {
+      ensureBlockLoaded(variant.blockId);
+    }
+  }
+
   useEffect(() => {
-    const blockId = focusLocation?.blockId;
-    if (!blockId) return;
+    const requestedBlockId = focusLocation?.blockId;
+    if (!requestedBlockId) return;
+    const anchorBlockId = anchorBlockIdForBlock(requestedBlockId, blocksById);
+    if (!anchorBlockId) return;
 
     let cancelled = false;
 
     async function go() {
-      // If an artifact navigates to a block, expand it and try to load the full lines.
-      setExpanded(blockId, true);
+      // If navigation targets a hidden bank variant, show that variant in the
+      // visible anchor row instead of trying to scroll to a duplicate row.
+      if (anchorBlockId !== requestedBlockId) {
+        setBankVariantSelectionByAnchorId((p) => ({ ...p, [anchorBlockId]: requestedBlockId }));
+      }
+      setExpanded(anchorBlockId, true);
 
-      const idx = blockIdToTimelineIndex.get(blockId);
-      await ensureBlockLoaded(blockId);
+      const idx = blockIdToTimelineIndex.get(requestedBlockId) ?? blockIdToTimelineIndex.get(anchorBlockId);
+      await ensureBlockLoaded(requestedBlockId);
       if (cancelled) return;
 
       if (typeof idx === 'number') {
@@ -305,7 +399,7 @@ export function BlockStack({
           // eslint-disable-next-line no-await-in-loop
           await new Promise((r) => window.requestAnimationFrame(r));
           if (cancelled) return;
-          const el = document.getElementById(`nv-block-${blockId}`);
+          const el = document.getElementById(`nv-block-${requestedBlockId}`);
           if (el) break;
           // Nudge again after a couple frames in case measurement drift pushed it away.
           if (i === 2 || i === 6) {
@@ -322,7 +416,7 @@ export function BlockStack({
 
         const focusRomOff = focusLocation?.focusRomOff;
         if (typeof focusRomOff === 'number') {
-          const blockEl = document.getElementById(`nv-block-${blockId}`);
+          const blockEl = document.getElementById(`nv-block-${requestedBlockId}`);
           const container = parentRef.current;
           if (blockEl && container) {
             const targetEl = blockEl.querySelector(`.nv-line[data-rom-off="${focusRomOff >>> 0}"]`);
@@ -337,7 +431,7 @@ export function BlockStack({
           }
         }
 
-        setFlashId(blockId);
+        setFlashId(requestedBlockId);
         window.setTimeout(() => setFlashId(null), 1200);
       }
 
@@ -380,7 +474,7 @@ export function BlockStack({
     <div className="nv-stack" ref={parentRef}>
       <div className="nv-virt-inner" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
         {virtualItems.map((vr) => {
-          const item = timeline[vr.index];
+          const item = visibleTimeline[vr.index];
           if (!item) return null;
 
           const rowStyle = {
@@ -409,8 +503,8 @@ export function BlockStack({
             );
           }
 
-          const blockId = item.blockId;
-          if (!blockId) {
+          const anchorBlockId = item.blockId;
+          if (!anchorBlockId) {
             return (
               <div
                 key={vr.key}
@@ -431,11 +525,20 @@ export function BlockStack({
               </div>
             );
           }
-          const b = blocksById.get(blockId);
-          const full = blockCache[blockId];
-          const isExpanded = !!expandedById[blockId];
-          const isLoading = !!loadingById[blockId];
-          const isFocused = flashId === blockId;
+          const selectedBlockId = bankVariantSelectionByAnchorId[anchorBlockId] || anchorBlockId;
+          const b = blocksById.get(selectedBlockId) || blocksById.get(anchorBlockId);
+          const displayedBlockId = b?.id || selectedBlockId;
+          const full = blockCache[displayedBlockId];
+          const isExpanded = !!expandedById[anchorBlockId];
+          const isLoading = !!loadingById[displayedBlockId];
+          const isFocused = flashId === displayedBlockId || flashId === anchorBlockId;
+          const displayedItem = {
+            ...item,
+            blockId: displayedBlockId,
+            romStart: typeof b?.romStart === 'number' ? b.romStart : item.romStart,
+            romEnd: typeof b?.romEnd === 'number' ? b.romEnd : item.romEnd,
+            byteLen: byteLenForBlockIndex(b, item)
+          };
 
           return (
             <div
@@ -446,7 +549,7 @@ export function BlockStack({
                 style={rowStyle}
               >
               <BlockCard
-                item={item}
+                item={displayedItem}
                 blockIndex={b}
                 blockFull={full}
                 isExpanded={isExpanded}
@@ -454,18 +557,20 @@ export function BlockStack({
                 isFocused={isFocused}
                 markedRomSpan={markedRomSpan}
                 onNavigateToRomOff={onNavigateToRomOff}
+                onSelectBankVariant={(variant) => selectBankVariant(anchorBlockId, variant)}
                 labelsByRomOff={labelsByRomOff}
                 labelsByAddr={labelsByAddr}
                 showDebugInfo={showDebugInfo}
                 showNamedConstants={showNamedConstants}
+                mapper={mapper}
                 onHoverLine={onHoverLine}
                 onContextMenuLine={onContextMenuLine}
                 onContextMenuBlock={onContextMenuBlock}
                 onToggleExpanded={async () => {
                   const next = !isExpanded;
-                  setExpanded(blockId, next);
+                  setExpanded(anchorBlockId, next);
                   if (next) {
-                    await ensureBlockLoaded(blockId);
+                    await ensureBlockLoaded(displayedBlockId);
                   }
                 }}
               />

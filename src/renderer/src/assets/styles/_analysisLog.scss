@@ -1,0 +1,215 @@
+@use "./variables" as *;
+
+.nv-analysis-log-window {
+  height: 100vh;
+  min-height: 0;
+  background: $bg;
+}
+
+.nv-analysis-log-window > .nv-modal-header {
+  flex: 0 0 auto;
+}
+
+.nv-analysis-log-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nv-analysis-log-section,
+.nv-analysis-log-group {
+  flex: 0 0 auto;
+  background: $panel-bg;
+  border: 1px solid $border;
+  border-radius: $radius-lg;
+  overflow: hidden;
+}
+
+.nv-analysis-log-section.is-indented {
+  border-radius: $radius-md;
+}
+
+.nv-analysis-log-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.nv-analysis-log-group-phases {
+  flex: 0 0 auto;
+  padding: 5px 5px 6px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: $muted-bg;
+  border-top: 1px solid $border;
+}
+
+.nv-analysis-log-phase {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 9px;
+  color: $text-strong;
+}
+
+.nv-analysis-log-group > .nv-analysis-log-phase {
+  font-weight: 600;
+}
+
+.nv-analysis-log-phase.is-running {
+  font-weight: 700;
+}
+
+.nv-analysis-log-check-slot {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nv-analysis-log-heading-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nv-analysis-log-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nv-analysis-log-time {
+  min-height: 12px;
+  font-size: 11px;
+  line-height: 12px;
+  font-weight: 400;
+  color: $muted;
+}
+
+.nv-analysis-log-round {
+  min-height: 12px;
+  font-size: 11px;
+  line-height: 12px;
+  font-weight: 500;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-analysis-log-lines {
+  flex: 0 0 auto;
+  border-top: 1px solid $border;
+  min-height: 22px;
+  padding: 6px 9px 6px 31px;
+  background: $muted-bg;
+}
+
+.nv-analysis-log-lines.is-collapsed {
+  display: none;
+}
+
+.nv-analysis-log-error {
+  flex: 0 0 auto;
+  padding: 12px 14px;
+  color: #b91c1c;
+  background: $panel-bg;
+  border: 1px solid $border;
+  border-radius: $radius-md;
+}
+
+
+.nv-analysis-log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: $text;
+}
+
+
+.nv-analysis-log-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.nv-analysis-log-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nv-analysis-log-progress {
+  flex: 1 1 auto;
+  min-width: 90px;
+  height: 8px;
+  overflow: hidden;
+  background: $bg;
+  border: 1px solid $border;
+  border-radius: 999px;
+}
+
+.nv-analysis-log-progress-fill {
+  height: 100%;
+  background: $accent;
+}
+
+.nv-analysis-log-progress-text {
+  flex: 0 0 auto;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-analysis-log-stat-row {
+  display: flex;
+  gap: 16px;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-analysis-log-stat-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.nv-analysis-log-detail-heading {
+  font-weight: 600;
+  color: $text-strong;
+}
+
+.nv-analysis-log-detail-subheading {
+  color: $muted;
+}
+
+.nv-analysis-log-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 4px 12px;
+  color: $muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.nv-analysis-log-stat {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.nv-analysis-log-stat-label {
+  color: $muted;
+}
+
+.nv-analysis-log-stat-value {
+  color: $text;
+}

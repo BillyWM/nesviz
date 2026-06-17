@@ -16,168 +16,12 @@ function getBlockConfidenceById(blocks) {
   return map;
 }
 
-function buildBlockIndexes(analysis) {
-  const blocks = Array.isArray(analysis?.blocks) ? analysis.blocks : [];
-  const blockById = new Map();
-  const rawToDisplayBlockId = new Map();
-  const rawToDisplay = analysis?.rawToDisplayBlockIds && typeof analysis.rawToDisplayBlockIds === 'object'
-    ? analysis.rawToDisplayBlockIds
-    : {};
-
-  for (const block of blocks) {
-    if (typeof block?.id === 'string' && block.id) blockById.set(block.id, block);
-    for (const rawBlockId of block?.rawBlockIds || []) {
-      if (typeof rawBlockId === 'string' && rawBlockId) rawToDisplayBlockId.set(rawBlockId, block.id);
-    }
-  }
-
-  for (const [rawBlockId, displayBlockId] of Object.entries(rawToDisplay)) {
-    if (typeof rawBlockId === 'string' && rawBlockId && typeof displayBlockId === 'string' && displayBlockId) {
-      rawToDisplayBlockId.set(rawBlockId, displayBlockId);
-    }
-  }
-
-  return { blockById, rawToDisplayBlockId };
-}
-
-function blockRomStart(block) {
-  if (typeof block?.romStart === 'number' && Number.isFinite(block.romStart)) return block.romStart >>> 0;
-  const lineOffsets = (Array.isArray(block?.lines) ? block.lines : [])
-    .map((line) => (typeof line?.romOff === 'number' && Number.isFinite(line.romOff)) ? (line.romOff >>> 0) : null)
-    .filter((value) => value !== null);
-  if (lineOffsets.length) return Math.min(...lineOffsets) >>> 0;
-  return null;
-}
-
-function displayBlockIdForRawBlock(rawBlockId, indexes, context) {
-  if (!(typeof rawBlockId === 'string' && rawBlockId)) {
-    throw new Error(`Memory map annotation ${context} is missing a raw block id`);
-  }
-  const mapped = indexes.rawToDisplayBlockId.get(rawBlockId);
-  if (mapped && indexes.blockById.has(mapped)) return mapped;
-  if (indexes.blockById.has(rawBlockId)) return rawBlockId;
-  throw new Error(`Memory map annotation ${context} raw block ${rawBlockId} could not be mapped to a display block`);
-}
-
-function requireDisplayBlockRomStart(displayBlockId, indexes, context) {
-  const block = indexes.blockById.get(displayBlockId);
-  const romStart = blockRomStart(block);
-  if (romStart === null) {
-    throw new Error(`Memory map annotation ${context} display block ${displayBlockId} is missing a ROM-absolute start`);
-  }
-  return romStart >>> 0;
-}
-
-function romLabel(romOff) {
-  const value = romOff >>> 0;
-  const width = Math.max(4, value.toString(16).length);
-  return `$${fmtHex(value, width)}`;
-}
-
-function normalizeUseSites(functionUse, indexes) {
-  const byKey = new Map();
-  for (const site of Array.isArray(functionUse?.useSites) ? functionUse.useSites : []) {
-    if (typeof site?.romOff !== 'number') {
-      throw new Error(`Memory map annotation function ${functionUse?.functionId || '<unknown>'} has a use site without a ROM-absolute address`);
-    }
-    const romOff = site.romOff >>> 0;
-    const rawBlockId = typeof site?.rawBlockId === 'string' && site.rawBlockId ? site.rawBlockId : null;
-    const displayBlockId = displayBlockIdForRawBlock(rawBlockId, indexes, `function ${functionUse?.functionId || '<unknown>'} use site ${romLabel(romOff)}`);
-    const traceId = typeof site?.traceId === 'string' && site.traceId ? site.traceId : null;
-    const observationId = typeof site?.observationId === 'string' && site.observationId ? site.observationId : null;
-    const key = [romOff.toString(16), rawBlockId || '', displayBlockId || '', traceId || '', observationId || ''].join(':');
-    if (!byKey.has(key)) {
-      byKey.set(key, { romOff, rawBlockId, displayBlockId, traceId, observationId });
-    }
-  }
-  return Array.from(byKey.values()).sort((a, b) => (a.romOff - b.romOff)
-    || String(a.rawBlockId || '').localeCompare(String(b.rawBlockId || ''))
-    || String(a.displayBlockId || '').localeCompare(String(b.displayBlockId || ''))
-    || String(a.traceId || '').localeCompare(String(b.traceId || ''))
-    || String(a.observationId || '').localeCompare(String(b.observationId || '')));
-}
-
-function mergeUseSites(a, b) {
-  const byKey = new Map();
-  for (const site of [...(a || []), ...(b || [])]) {
-    const key = [
-      (site.romOff >>> 0).toString(16),
-      site.rawBlockId || '',
-      site.traceId || '',
-      site.observationId || ''
-    ].join(':');
-    if (!byKey.has(key)) byKey.set(key, site);
-  }
-  return Array.from(byKey.values()).sort((x, y) => (x.romOff - y.romOff)
-    || String(x.rawBlockId || '').localeCompare(String(y.rawBlockId || ''))
-    || String(x.traceId || '').localeCompare(String(y.traceId || ''))
-    || String(x.observationId || '').localeCompare(String(y.observationId || '')));
-}
-
-function requireFunctionRomStart(functionUse) {
-  if (typeof functionUse?.functionRomStart !== 'number') {
-    throw new Error(`Memory map annotation function ${functionUse?.functionId || '<unknown>'} is missing a carried ROM-absolute function start`);
-  }
-  return functionUse.functionRomStart >>> 0;
-}
-
-function normalizeFunctions(annotation, indexes) {
-  const rawFunctionUses = Array.isArray(annotation?.functionUses) ? annotation.functionUses : [];
-  const byDisplayBlock = new Map();
-
-  for (const functionUse of rawFunctionUses) {
-    const carriedRomStart = requireFunctionRomStart(functionUse);
-    const useSites = normalizeUseSites(functionUse, indexes);
-    if (!useSites.length) {
-      throw new Error(`Memory map annotation function ${functionUse?.functionId || '<unknown>'} has no ROM-absolute use sites`);
-    }
-
-    const useSitesByDisplayBlock = new Map();
-    for (const site of useSites) {
-      let list = useSitesByDisplayBlock.get(site.displayBlockId);
-      if (!list) {
-        list = [];
-        useSitesByDisplayBlock.set(site.displayBlockId, list);
-      }
-      list.push(site);
-    }
-
-    for (const [displayBlockId, displayUseSites] of useSitesByDisplayBlock.entries()) {
-      const displayRomStart = requireDisplayBlockRomStart(displayBlockId, indexes, `function ${functionUse?.functionId || '<unknown>'}`);
-      const prev = byDisplayBlock.get(displayBlockId);
-      if (prev) {
-        prev.functionIds = Array.from(new Set([...prev.functionIds, functionUse?.functionId].filter(Boolean))).sort();
-        prev.rootBlockIds = Array.from(new Set([...prev.rootBlockIds, functionUse?.functionRootRawBlockId].filter(Boolean))).sort();
-        prev.carriedFunctionRomStarts = Array.from(new Set([...prev.carriedFunctionRomStarts, carriedRomStart])).sort((a, b) => a - b);
-        prev.useSites = mergeUseSites(prev.useSites, displayUseSites);
-        prev.primaryUseSiteRomOff = prev.useSites[0]?.romOff ?? null;
-        continue;
-      }
-      const mergedUseSites = mergeUseSites([], displayUseSites);
-      byDisplayBlock.set(displayBlockId, {
-        id: displayBlockId,
-        functionIds: Array.from(new Set([functionUse?.functionId].filter(Boolean))).sort(),
-        rootBlockIds: Array.from(new Set([functionUse?.functionRootRawBlockId].filter(Boolean))).sort(),
-        carriedFunctionRomStarts: [carriedRomStart],
-        displayBlockId,
-        romStart: displayRomStart,
-        label: romLabel(displayRomStart),
-        useSites: mergedUseSites,
-        primaryUseSiteRomOff: mergedUseSites[0]?.romOff ?? null
-      });
-    }
-  }
-
-  return Array.from(byDisplayBlock.values()).sort((a, b) => (a.romStart - b.romStart)
-    || String(a.displayBlockId || '').localeCompare(String(b.displayBlockId || '')));
-}
-
 function normalizeAnnotationRange(annotation, prgSize) {
   const range = annotation?.range || null;
   const space = range?.space;
   const start = Number(range?.start);
   const end = Number(range?.end);
-  if (!(space === 'zp' || space === 'ram' || space === 'rom')) return null;
+  if (!(space === 'zp' || space === 'ram' || space === 'prg')) return null;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
 
   if (space === 'zp') {
@@ -203,8 +47,47 @@ function normalizeAnnotationRange(annotation, prgSize) {
   };
 }
 
-function normalizeMapAnnotations(rawAnnotations, analysis, prgSize) {
-  const indexes = buildBlockIndexes(analysis);
+function normalizeAnnotationLink(link, fallbackIndex) {
+  if (!link || typeof link !== 'object') return null;
+  const romOff = Number(link.romOff);
+  const cpuAddr = Number(link.cpuAddr);
+  if (!Number.isFinite(romOff) && !Number.isFinite(cpuAddr)) return null;
+  const label = typeof link.label === 'string' && link.label
+    ? link.label
+    : (Number.isFinite(cpuAddr) ? `$${fmtHex(cpuAddr & 0xffff, 4)}` : `$${fmtHex(romOff >>> 0, 6)}`);
+  return {
+    id: typeof link.id === 'string' && link.id ? link.id : `link:${fallbackIndex}`,
+    kind: typeof link.kind === 'string' && link.kind ? link.kind : 'link',
+    label,
+    romOff: Number.isFinite(romOff) ? (romOff >>> 0) : null,
+    cpuAddr: Number.isFinite(cpuAddr) ? (cpuAddr & 0xffff) : null,
+    siteKey: typeof link.siteKey === 'string' && link.siteKey ? link.siteKey : null,
+    contextKey: typeof link.contextKey === 'string' && link.contextKey ? link.contextKey : null
+  };
+}
+
+function normalizeAnnotationGroups(annotation) {
+  const groups = [];
+  for (const group of Array.isArray(annotation?.useGroups) ? annotation.useGroups : []) {
+    if (!group || typeof group !== 'object') continue;
+    const links = [];
+    let linkIndex = 0;
+    for (const rawLink of Array.isArray(group.links) ? group.links : []) {
+      const link = normalizeAnnotationLink(rawLink, linkIndex);
+      linkIndex += 1;
+      if (link) links.push(link);
+    }
+    if (!links.length) continue;
+    groups.push({
+      kind: typeof group.kind === 'string' && group.kind ? group.kind : 'links',
+      label: typeof group.label === 'string' && group.label ? group.label : 'Links',
+      links
+    });
+  }
+  return groups;
+}
+
+function normalizeRangeAnnotations(rawAnnotations, prgSize) {
   const out = [];
   const seenIds = new Set();
 
@@ -213,7 +96,7 @@ function normalizeMapAnnotations(rawAnnotations, analysis, prgSize) {
     if (!normalizedRange) continue;
     const baseId = typeof annotation?.id === 'string' && annotation.id
       ? annotation.id
-      : `annotation:${out.length}`;
+      : `rangeAnnotation:${out.length}`;
     let id = baseId;
     let suffix = 2;
     while (seenIds.has(id)) id = `${baseId}:${suffix++}`;
@@ -222,18 +105,25 @@ function normalizeMapAnnotations(rawAnnotations, analysis, prgSize) {
     out.push({
       id,
       kind: String(annotation?.kind || 'annotation'),
-      source: String(annotation?.source || 'analysis'),
+      subtype: String(annotation?.subtype || ''),
       label: String(annotation?.label || 'Annotation'),
+      note: typeof annotation?.note === 'string' && annotation.note ? annotation.note : '',
+      occupancy: typeof annotation?.occupancy === 'string' && annotation.occupancy ? annotation.occupancy : null,
       range: normalizedRange.range,
       view: normalizedRange.view,
-      functions: normalizeFunctions(annotation, indexes)
+      useGroups: normalizeAnnotationGroups(annotation)
     });
   }
 
   return out;
 }
 
+function isSemanticOccupancyGroup(group) {
+  return group?.semanticOccupancy === true && typeof group?.occupancy === 'string' && group.occupancy;
+}
+
 function classifyGroupType(group, blockConfidenceById) {
+  if (isSemanticOccupancyGroup(group)) return group.occupancy;
   const baseType = group?.space === 'rom' ? 'romData' : 'group';
   const touching = Array.isArray(group?.touchingRawBlockIds) ? group.touchingRawBlockIds : [];
   if (!touching.length) return baseType;
@@ -244,6 +134,19 @@ function classifyGroupType(group, blockConfidenceById) {
     if (conf === 'probable') sawProbable = true;
   }
   return sawProbable ? `${baseType}Light` : baseType;
+}
+
+function applySemanticTypedRange(types, start, end, type) {
+  const limit = Math.min(types.length, end | 0);
+  for (let i = Math.max(0, start | 0); i < limit; i++) types[i] = type;
+}
+
+function applyGroupTypedRange(types, start, end, type, group) {
+  if (isSemanticOccupancyGroup(group)) {
+    applySemanticTypedRange(types, start, end, type);
+    return;
+  }
+  applyTypedRange(types, start, end, type);
 }
 
 function applyTypedRange(types, start, end, type) {
@@ -325,7 +228,7 @@ export function buildMemoryMapDataForState(s) {
       prg: null,
       rom: null,
       mapper: null,
-      mapAnnotations: []
+      rangeAnnotations: []
     };
   }
 
@@ -336,8 +239,8 @@ export function buildMemoryMapDataForState(s) {
   const analysis = s.displayAnalysis || null;
   const groups = Array.isArray(analysis?.memoryDiscoveries?.groups) ? analysis.memoryDiscoveries.groups : [];
   const oamDmaTransfers = Array.isArray(analysis?.memoryDiscoveries?.oamDmaTransfers) ? analysis.memoryDiscoveries.oamDmaTransfers : [];
-  const rawMapAnnotations = Array.isArray(analysis?.memoryDiscoveries?.mapAnnotations) ? analysis.memoryDiscoveries.mapAnnotations : [];
-  const mapAnnotations = normalizeMapAnnotations(rawMapAnnotations, analysis, prgSize);
+  const rawRangeAnnotations = Array.isArray(analysis?.memoryDiscoveries?.rangeAnnotations) ? analysis.memoryDiscoveries.rangeAnnotations : [];
+  const rangeAnnotations = normalizeRangeAnnotations(rawRangeAnnotations, prgSize);
   const blocks = Array.isArray(analysis?.blocks) ? analysis.blocks : [];
   const blockConfidenceById = getBlockConfidenceById(blocks);
 
@@ -371,7 +274,7 @@ export function buildMemoryMapDataForState(s) {
 
   const ramAnnotationCells = createAnnotationCells(0x800);
   const prgAnnotationCells = createAnnotationCells(prgSize);
-  for (const annotation of mapAnnotations) {
+  for (const annotation of rangeAnnotations) {
     if (annotation.view.space === 'ram') addAnnotationToCells(ramAnnotationCells, annotation.view.start, annotation.view.end, annotation.id);
     if (annotation.view.space === 'prg') addAnnotationToCells(prgAnnotationCells, annotation.view.start, annotation.view.end, annotation.id);
   }
@@ -396,7 +299,7 @@ export function buildMemoryMapDataForState(s) {
       for (const span of group?.spans || []) {
         const start = Math.max(0, Math.min(prgTypes.length, Number(span?.start) | 0));
         const end = Math.max(start, Math.min(prgTypes.length, (Number(span?.end) | 0) + 1));
-        applyTypedRange(prgTypes, start, end, groupType);
+        applyGroupTypedRange(prgTypes, start, end, groupType, group);
       }
     }
 
@@ -407,6 +310,16 @@ export function buildMemoryMapDataForState(s) {
       const start = Math.max(0, Math.min(prgTypes.length, romStart | 0));
       const end = Math.max(start, Math.min(prgTypes.length, romEnd | 0));
       applyTypedRange(prgTypes, start, end, 'code');
+    }
+  }
+
+  for (const group of groups) {
+    if (group?.space !== 'rom') continue;
+    const groupType = classifyGroupType(group, blockConfidenceById);
+    for (const span of group?.spans || []) {
+      const start = Math.max(0, Math.min(prgTypes.length, Number(span?.start) | 0));
+      const end = Math.max(start, Math.min(prgTypes.length, (Number(span?.end) | 0) + 1));
+      applyGroupTypedRange(prgTypes, start, end, groupType, group);
     }
   }
 
@@ -436,7 +349,7 @@ export function buildMemoryMapDataForState(s) {
       prgSize
     },
     mapper: analysis?.mapper || { kind: null, meta: analysisMapper },
-    mapAnnotations,
+    rangeAnnotations,
     ram: {
       sizeBytes: 0x800,
       occupiedRanges: ramOccupiedRanges,

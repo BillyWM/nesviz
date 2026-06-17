@@ -170,7 +170,7 @@ function pruneOrStoreRomEntry(romHash, patch) {
   }
 }
 
-export async function getBookmarksForRomHash(romHash) {
+export async function getBookmarksForRom(romHash) {
   await ensureUserDataLoaded();
   if (!romHash) return [];
   const entry = data.roms?.[romHash];
@@ -184,14 +184,14 @@ export async function getBookmarksForRomHash(romHash) {
   return Array.from(byKey.values()).sort((a, b) => a.romOff - b.romOff);
 }
 
-export async function setBookmarkForRomHash(romHash, romOff, set) {
+export async function setBookmarkForRom(romHash, romOff, set) {
   await ensureUserDataLoaded();
   if (!romHash) return [];
 
   const n = normalizeRomBookmark({ romOff });
-  if (!n) return getBookmarksForRomHash(romHash);
+  if (!n) return getBookmarksForRom(romHash);
 
-  const prev = await getBookmarksForRomHash(romHash);
+  const prev = await getBookmarksForRom(romHash);
   const byKey = new Map(prev.map((bm) => [keyForRomOff(bm.romOff), bm]));
   const k = keyForRomOff(n.romOff);
   if (set) byKey.set(k, n);
@@ -204,7 +204,7 @@ export async function setBookmarkForRomHash(romHash, romOff, set) {
   return next;
 }
 
-export async function getAddrLabelsForRomHash(romHash) {
+export async function getCpuAddressLabelsForRom(romHash) {
   await ensureUserDataLoaded();
   if (!romHash) return {};
   const entry = data.roms?.[romHash];
@@ -221,12 +221,12 @@ export async function getAddrLabelsForRomHash(romHash) {
   return out;
 }
 
-export async function setAddrLabelForRomHash(romHash, cpuAddr, label) {
+export async function setCpuAddressLabelForRom(romHash, cpuAddr, label) {
   await ensureUserDataLoaded();
   if (!romHash) return {};
 
   const addr = normalizeCpuAddr(cpuAddr);
-  if (addr === null) return getAddrLabelsForRomHash(romHash);
+  if (addr === null) return getCpuAddressLabelsForRom(romHash);
 
   const text = normalizeLabelText(label);
   const entry = data.roms?.[romHash];
@@ -246,10 +246,10 @@ export async function setAddrLabelForRomHash(romHash, cpuAddr, label) {
   pruneOrStoreRomEntry(romHash, { addrLabels: Object.keys(next).length ? next : null });
 
   await saveToDisk();
-  return getAddrLabelsForRomHash(romHash);
+  return getCpuAddressLabelsForRom(romHash);
 }
 
-export async function getLabelsForRomHash(romHash) {
+export async function getRomOffsetLabelsForRom(romHash) {
   await ensureUserDataLoaded();
   if (!romHash) return {};
   const entry = data.roms?.[romHash];
@@ -265,15 +265,15 @@ export async function getLabelsForRomHash(romHash) {
   return out;
 }
 
-export async function setLabelForRomHash(romHash, romOff, label) {
+export async function setRomOffsetLabelForRom(romHash, romOff, label) {
   await ensureUserDataLoaded();
   if (!romHash) return {};
 
   const off = normalizeRomOff(romOff);
-  if (off === null) return getLabelsForRomHash(romHash);
+  if (off === null) return getRomOffsetLabelsForRom(romHash);
 
   const text = normalizeLabelText(label);
-  const prev = await getLabelsForRomHash(romHash);
+  const prev = await getRomOffsetLabelsForRom(romHash);
   const next = { ...prev };
   const k = keyForRomOff(off);
   if (text) next[k] = { romOff: off, label: text };
@@ -282,7 +282,7 @@ export async function setLabelForRomHash(romHash, romOff, label) {
   pruneOrStoreRomEntry(romHash, { labels: Object.keys(next).length ? next : null });
 
   await saveToDisk();
-  return getLabelsForRomHash(romHash);
+  return getRomOffsetLabelsForRom(romHash);
 }
 
 export async function getRecentRomPaths() {
