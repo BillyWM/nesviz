@@ -1,7 +1,7 @@
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 
-import { getActiveRomSummary } from '../analyze2/analysisIpc.js';
+import { getActiveRomSummary } from '../analyze/analysisIpc.js';
 import { formatBytes } from '../../shared/utils/byteUtils.js';
 import { isLoopbackAddress } from '../utils/networkUtils.js';
 

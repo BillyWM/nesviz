@@ -5,7 +5,7 @@ import {
   requireInteger,
   requireObject,
   requireString
-} from '../../shared/analyze2/dataShape.js';
+} from '../../shared/analyze/dataShape.js';
 
 export function requireCodeViewState(active) {
   if (!active || !active.displayAnalysis) return null;

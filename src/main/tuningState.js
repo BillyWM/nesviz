@@ -1,13 +1,16 @@
 import { ipcMain } from 'electron';
-import { DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K } from '../shared/analyze/probable/config.js';
+
+const DEFAULT_TUNING = {
+  maxProbeStartsPerRange: 64,
+  minChunkBytes: 48,
+  minShortChunkBytes: 16,
+  shortChunkMinScore: 30,
+  requireGoodTerminatorForShortChunks: true
+};
 
 function buildDefaults() {
   return {
-    maxProbeStartsPerRange: DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K.maxProbeStartsPerRange | 0,
-    minChunkBytes: DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K.minChunkBytes | 0,
-    minShortChunkBytes: DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K.minShortChunkBytes | 0,
-    shortChunkMinScore: DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K.shortChunkMinScore | 0,
-    requireGoodTerminatorForShortChunks: !!DEFAULT_PROBABLE_CONFIG_FIXED_SWITCH16K.requireGoodTerminatorForShortChunks
+    ...DEFAULT_TUNING
   };
 }
 

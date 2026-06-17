@@ -1,276 +1,259 @@
-import { siteKeyFor } from '../fetchContext.js';
-import { DEFAULT_COALESCE_CONFIG } from './config.js';
+import { OPCODES } from '../../cpu6502/opcodes.js';
+import { EDGE_KINDS } from '../cfg/constants.js';
+import { extractRomReadDataRanges, subtractRanges } from '../memoryDiscoveries/romDataRanges.js';
+import { makeCoalescedBlockId } from '../identity.js';
+import {
+  buildInstructionMap,
+  requireArray,
+  requireCoalescedBlock,
+  requireEdge,
+  requireInstructionFromMap,
+  requireNumber,
+  requireObject,
+  requireRawBlock
+} from '../dataShape.js';
 
-function normalizeCodeConfidence(confidence) {
-  return confidence === 'probable' ? 'probable' : 'certain';
+const BRANCH_OVER_HARD_STOP_MAX_INSTR = 16;
+const HARD_STOP_MNEMONICS = new Set(['BRK', 'JMP', 'RTS', 'RTI']);
+const BRANCH_EDGE_KINDS = new Set([EDGE_KINDS.BRANCH_TAKEN]);
+
+function requireOpcodeEntry(instruction) {
+  const entry = OPCODES[instruction.opcode & 0xff];
+  if (!entry) {
+    throw new Error(`Missing opcode table entry for decoded opcode ${instruction.opcode} at romOff ${instruction.romOff}`);
+  }
+  return entry;
 }
 
-function summarizeCodeConfidence(hasCertain, hasProbable) {
-  if (hasCertain && hasProbable) return 'mixed';
-  if (hasProbable) return 'probable';
-  return 'certain';
+function lastInstructionOfBlock(instructionById, block) {
+  requireRawBlock(block, 'raw block');
+  return requireInstructionFromMap(
+    instructionById,
+    block.instructionIds[block.instructionIds.length - 1],
+    `${block.blockId}.lastInstructionId`
+  );
+}
+
+function instructionMnemonic(instruction) {
+  return requireOpcodeEntry(instruction).mnemonic;
+}
+
+function isHardStopInstruction(instruction) {
+  return HARD_STOP_MNEMONICS.has(instructionMnemonic(instruction));
+}
+
+function isBareRtsGroup(group, instructionById) {
+  requireCoalescedBlock(group, 'coalesced group');
+  if (group.instructionIds.length !== 1) return false;
+  return instructionMnemonic(requireInstructionFromMap(instructionById, group.instructionIds[0], `${group.coalescedBlockId}.instructionIds[0]`)) === 'RTS';
 }
 
 function isContiguous(a, b) {
-  return !!a && !!b && typeof a.romEnd === 'number' && typeof b.romStart === 'number' && a.romEnd === b.romStart;
+  requireObject(a, 'left block/group');
+  requireObject(b, 'right block/group');
+  requireNumber(a.romEnd, 'left.romEnd');
+  requireNumber(b.romStart, 'right.romStart');
+  return a.romEnd === b.romStart;
 }
 
-function blockStartSiteKey(block) {
-  if (!block || typeof block !== 'object') return null;
-
-  const firstLine = block?.lines?.[0] || null;
-  if (typeof firstLine?.siteKey === 'string' && firstLine.siteKey) return firstLine.siteKey;
-
-  const firstInstance = block?.instances?.[0] || null;
-  if (typeof firstInstance?.siteKey === 'string' && firstInstance.siteKey) return firstInstance.siteKey;
-
-  const ctxKey = (typeof firstLine?.ctxKey === 'string' && firstLine.ctxKey)
-    || (typeof block?.ctxKey === 'string' && block.ctxKey)
-    || (typeof firstInstance?.ctxId === 'string' && firstInstance.ctxId)
-    || (typeof firstInstance?.fetchCtxKey === 'string' && firstInstance.fetchCtxKey)
-    || null;
-  const cpuStart = typeof firstLine?.cpuAddr === 'number'
-    ? firstLine.cpuAddr
-    : (typeof firstInstance?.cpuStart === 'number' ? firstInstance.cpuStart : null);
-  if (typeof cpuStart !== 'number') return null;
-  return siteKeyFor(ctxKey, cpuStart & 0xffff);
+function maybeContiguous(a, b) {
+  if (!a || !b) return false;
+  return isContiguous(a, b);
 }
 
-function lastLineOf(entity) {
-  const lines = entity?.lines;
-  return Array.isArray(lines) && lines.length > 0 ? lines[lines.length - 1] : null;
+function dedupeStrings(values) {
+  return Array.from(new Set(values)).sort();
 }
 
-function isHardStopLine(ln) {
-  if (!ln || typeof ln !== 'object') return false;
-  const mnemonic = typeof ln.mnemonic === 'string' ? ln.mnemonic.toUpperCase() : '';
-  return mnemonic === 'BRK' || mnemonic === 'JMP' || mnemonic === 'RTS' || mnemonic === 'RTI';
+function sourceIdsForMember(member) {
+  if (typeof member.blockId === 'string' && member.blockId) return [member.blockId];
+  requireCoalescedBlock(member, 'coalesced member');
+  return member.sourceBlockIds;
 }
 
-function isBareRtsEntity(entity) {
-  const lines = entity?.lines;
-  if (!Array.isArray(lines) || lines.length !== 1) return false;
-  const ln = lines[0];
-  return typeof ln?.mnemonic === 'string' && ln.mnemonic.toUpperCase() === 'RTS';
+function producedByForMember(member) {
+  if (typeof member.producedBy === 'string' && member.producedBy) return [member.producedBy];
+  requireCoalescedBlock(member, 'coalesced member');
+  return member.producedBy;
 }
 
-function collectProbablePromotionDebugEntries(member, out, seen) {
-  const entries = member?.probablePromotionDebug?.entries;
-  if (!Array.isArray(entries)) return;
-
-  for (const entry of entries) {
-    if (!entry || typeof entry !== 'object') continue;
-    const rawBlockId = typeof entry.rawBlockId === 'string' && entry.rawBlockId ? entry.rawBlockId : '';
-    const acceptedReason = typeof entry.acceptedReason === 'string' && entry.acceptedReason ? entry.acceptedReason : '';
-    const romStart = typeof entry.romStart === 'number' ? entry.romStart >>> 0 : '';
-    const key = `${rawBlockId}:${acceptedReason}:${romStart}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(entry);
-  }
+function instructionIdsForMember(member) {
+  if (Array.isArray(member.instructionIds)) return member.instructionIds;
+  throw new Error('Coalesced member is missing instructionIds');
 }
 
-function makeMergedEntity(leaderId, members) {
-  const memberInstances = new Map();
-  const mergedLines = [];
-  const rawBlockIds = [];
-  const probablePromotionDebugEntries = [];
-  const probablePromotionDebugSeen = new Set();
+function makeGroup(members) {
+  const arr = requireArray(members, 'coalesced group members');
+  if (!arr.length) throw new Error('Cannot build a coalesced block from an empty member list');
 
-  let hasCertain = false;
-  let hasProbable = false;
+  const sourceBlockIds = [];
+  const producedBy = [];
+  const instructionIds = [];
   let romStart = null;
   let romEnd = null;
 
-  for (const member of members) {
-    if (!member) continue;
-    const memberLines = Array.isArray(member.lines) ? member.lines : [];
-    if (memberLines.length === 0) {
-      const memberConfidence = normalizeCodeConfidence(member.confidence);
-      if (memberConfidence === 'probable') hasProbable = true;
-      else hasCertain = true;
+  for (let i = 0; i < arr.length; i += 1) {
+    const member = requireObject(arr[i], `coalesced group member ${i}`);
+    requireNumber(member.romStart, `coalesced group member ${i}.romStart`);
+    requireNumber(member.romEnd, `coalesced group member ${i}.romEnd`);
+    if (i > 0 && !isContiguous(arr[i - 1], member)) {
+      throw new Error('Cannot coalesce non-contiguous physical code members');
     }
-
-    if (typeof member.romStart === 'number') romStart = romStart === null ? member.romStart : Math.min(romStart, member.romStart);
-    if (typeof member.romEnd === 'number') romEnd = romEnd === null ? member.romEnd : Math.max(romEnd, member.romEnd);
-
-    for (const rawId of member.rawBlockIds || []) {
-      rawBlockIds.push(rawId);
-    }
-
-    collectProbablePromotionDebugEntries(member, probablePromotionDebugEntries, probablePromotionDebugSeen);
-
-    for (const inst of member.instances || []) {
-      const ctxId = inst?.ctxId || 'nrom';
-      const cpuStart = inst?.cpuStart;
-      if (typeof cpuStart !== 'number') continue;
-      const key = `${ctxId}:${cpuStart & 0xffff}`;
-      if (!memberInstances.has(key)) memberInstances.set(key, { ctxId, cpuStart: cpuStart & 0xffff });
-    }
-
-    for (const ln of memberLines) {
-      const lineConfidence = normalizeCodeConfidence(ln?.confidence || member.confidence);
-      if (lineConfidence === 'probable') hasProbable = true;
-      else hasCertain = true;
-      mergedLines.push({ ...ln, confidence: lineConfidence });
-    }
+    if (romStart === null || member.romStart < romStart) romStart = member.romStart >>> 0;
+    if (romEnd === null || member.romEnd > romEnd) romEnd = member.romEnd >>> 0;
+    sourceBlockIds.push(...sourceIdsForMember(member));
+    producedBy.push(...producedByForMember(member));
+    instructionIds.push(...instructionIdsForMember(member));
   }
 
-  const cpuStart = mergedLines?.[0]?.cpuAddr;
-  const lastLine = mergedLines?.[mergedLines.length - 1];
-  const cpuEnd = lastLine && typeof lastLine.cpuAddr === 'number' && typeof lastLine.len === 'number'
-    ? ((lastLine.cpuAddr + lastLine.len) & 0xffff)
-    : null;
-
-  const out = {
-    id: leaderId,
+  const group = {
+    coalescedBlockId: makeCoalescedBlockId(romStart),
     romStart,
     romEnd,
-    confidence: summarizeCodeConfidence(hasCertain, hasProbable),
-    instances: Array.from(memberInstances.values()),
-    rawBlockIds,
-    cpuStart: typeof cpuStart === 'number' ? (cpuStart & 0xffff) : null,
-    cpuEnd,
-    lines: mergedLines
+    sourceBlockIds: dedupeStrings(sourceBlockIds),
+    producedBy: dedupeStrings(producedBy),
+    instructionIds
   };
-
-  if (probablePromotionDebugEntries.length > 0) {
-    out.probablePromotionDebug = { entries: probablePromotionDebugEntries };
-  }
-
-  return out;
+  return requireCoalescedBlock(group, group.coalescedBlockId);
 }
 
-function countInstrFromEntityIndexToStartSiteKey(entities, startIndex, targetSiteKey, maxInstr) {
-  if (!Array.isArray(entities)) return { found: false, count: 0, index: null };
-  if (typeof targetSiteKey !== 'string' || !targetSiteKey) return { found: false, count: 0, index: null };
-
-  let count = 0;
-  for (let i = startIndex; i < entities.length; i++) {
-    const entity = entities[i];
-    if (i > startIndex) {
-      const prev = entities[i - 1];
-      if (!isContiguous(prev, entity)) return { found: false, count, index: null };
-    }
-
-    if (blockStartSiteKey(entity) === targetSiteKey) {
-      return { found: true, count, index: i };
-    }
-
-    count += entity?.lines?.length || 0;
-    if (count > maxInstr) return { found: false, count, index: null };
-  }
-
-  return { found: false, count, index: null };
-}
-
-function collectBranchOverHardStopTargetIndex(entities, groupIndex, config) {
-  const entity = entities[groupIndex];
-  if (!entity || !isHardStopLine(lastLineOf(entity))) return null;
-
-  let bestTargetIndex = null;
-  const maxInstr = config.branchOverHardStopMaxInstr | 0;
-  if (maxInstr < 0) return null;
-
-  for (const ln of entity.lines || []) {
-    const flow = ln?.flow;
-    if (!flow || flow.type !== 'branch') continue;
-    if (typeof flow.target !== 'number' || typeof flow.fallthrough !== 'number') continue;
-    if ((flow.target & 0xffff) <= (flow.fallthrough & 0xffff)) continue;
-
-    const targetSiteKey = siteKeyFor(ln?.ctxKey, flow.target & 0xffff);
-    const result = countInstrFromEntityIndexToStartSiteKey(entities, groupIndex + 1, targetSiteKey, maxInstr);
-    if (!result.found || typeof result.index !== 'number') continue;
-
-    if (bestTargetIndex === null || result.index > bestTargetIndex) {
-      bestTargetIndex = result.index;
-    }
-  }
-
-  return bestTargetIndex;
-}
-
-function buildPrimaryGroups(sorted) {
+function buildPrimaryGroups(instructionById, sortedBlocks) {
   const groups = [];
 
-  for (let i = 0; i < sorted.length; ) {
-    const leader = sorted[i];
-    if (!leader || !leader.id) {
-      i++;
-      continue;
-    }
-
+  for (let i = 0; i < sortedBlocks.length; ) {
     const members = [];
     let j = i;
-    while (j < sorted.length) {
-      const block = sorted[j];
-      if (!block || !block.id) break;
+
+    while (j < sortedBlocks.length) {
+      const block = requireRawBlock(sortedBlocks[j], `sorted raw block ${j}`);
       members.push(block);
 
-      const next = sorted[j + 1];
-      const canContinue = isContiguous(block, next);
-      const hardStop = isHardStopLine(lastLineOf(block));
-      j++;
+      const next = sortedBlocks[j + 1] || null;
+      const canContinue = next ? isContiguous(block, next) : false;
+      const hardStop = isHardStopInstruction(lastInstructionOfBlock(instructionById, block));
+      j += 1;
 
       if (!canContinue || hardStop) break;
     }
 
-    groups.push(makeMergedEntity(leader.id, members.map((member) => ({
-      ...member,
-      rawBlockIds: Array.isArray(member?.rawBlockIds) && member.rawBlockIds.length ? member.rawBlockIds : [member.id]
-    }))));
+    groups.push(makeGroup(members));
     i = j;
   }
 
   return groups;
 }
 
-function applyBranchOverHardStop(groups, config) {
+function buildBranchTargetRomOffsByInstructionId(analysis) {
+  const out = new Map();
+  for (const edge of requireArray(analysis.edges, 'analysis.edges')) {
+    requireObject(edge, 'analysis edge');
+    if (!BRANCH_EDGE_KINDS.has(edge.kind)) continue;
+    requireEdge(edge, `edge ${edge.edgeId || '(missing id)'}`);
+    const fromInstructionId = edge.fromInstructionId >>> 0;
+    let targets = out.get(fromInstructionId);
+    if (!targets) {
+      targets = [];
+      out.set(fromInstructionId, targets);
+    }
+    targets.push(edge.targetRomOff >>> 0);
+  }
+  return out;
+}
+
+function countInstrFromGroupIndexToRomStart(groups, startIndex, targetRomOff, maxInstr) {
+  let count = 0;
+
+  for (let i = startIndex; i < groups.length; i += 1) {
+    const group = requireCoalescedBlock(groups[i], `coalesced group ${i}`);
+    if (i > startIndex && !isContiguous(groups[i - 1], group)) {
+      return { found: false, index: null, count };
+    }
+
+    if ((group.romStart >>> 0) === (targetRomOff >>> 0)) {
+      return { found: true, index: i, count };
+    }
+
+    count += group.instructionIds.length;
+    if (count > maxInstr) return { found: false, index: null, count };
+  }
+
+  return { found: false, index: null, count };
+}
+
+function branchOverHardStopTargetIndex(instructionById, groups, groupIndex, branchTargetRomOffsByInstructionId) {
+  const group = requireCoalescedBlock(groups[groupIndex], `coalesced group ${groupIndex}`);
+  const last = requireInstructionFromMap(
+    instructionById,
+    group.instructionIds[group.instructionIds.length - 1],
+    `${group.coalescedBlockId}.lastInstructionId`
+  );
+  if (!isHardStopInstruction(last)) return null;
+
+  let bestIndex = null;
+  for (const instructionId of group.instructionIds) {
+    const targets = branchTargetRomOffsByInstructionId.get(instructionId >>> 0) || [];
+    for (const targetRomOff of targets) {
+      if ((targetRomOff >>> 0) <= (group.romEnd >>> 0)) continue;
+      const result = countInstrFromGroupIndexToRomStart(
+        groups,
+        groupIndex + 1,
+        targetRomOff,
+        BRANCH_OVER_HARD_STOP_MAX_INSTR
+      );
+      if (!result.found || typeof result.index !== 'number') continue;
+      if (bestIndex === null || result.index > bestIndex) bestIndex = result.index;
+    }
+  }
+
+  return bestIndex;
+}
+
+function applyBranchOverHardStop(analysis, instructionById, groups) {
+  const branchTargetRomOffsByInstructionId = buildBranchTargetRomOffsByInstructionId(analysis);
   const out = [];
 
   for (let i = 0; i < groups.length; ) {
     let endIndex = i;
 
     while (endIndex < groups.length) {
-      const targetIndex = collectBranchOverHardStopTargetIndex(groups, endIndex, config);
+      const targetIndex = branchOverHardStopTargetIndex(instructionById, groups, endIndex, branchTargetRomOffsByInstructionId);
       if (targetIndex === null || targetIndex <= endIndex) break;
 
       let contiguous = true;
-      for (let k = endIndex; k < targetIndex; k++) {
+      for (let k = endIndex; k < targetIndex; k += 1) {
         if (!isContiguous(groups[k], groups[k + 1])) {
           contiguous = false;
           break;
         }
       }
       if (!contiguous) break;
-
       endIndex = targetIndex;
     }
 
-    const members = groups.slice(i, endIndex + 1);
-    out.push(makeMergedEntity(groups[i].id, members));
+    out.push(makeGroup(groups.slice(i, endIndex + 1)));
     i = endIndex + 1;
   }
 
   return out;
 }
 
-function applyBareRtsFixedPoint(groups) {
-  let current = Array.isArray(groups) ? groups : [];
+function applyBareRtsAbsorption(instructionById, groups) {
+  let current = requireArray(groups, 'coalesced groups');
 
   while (true) {
     const next = [];
     let changed = false;
 
-    for (let i = 0; i < current.length; i++) {
-      const entity = current[i];
-      if (i > 0 && isBareRtsEntity(entity) && isContiguous(next[next.length - 1], entity)) {
-        const prev = next.pop();
-        next.push(makeMergedEntity(prev.id, [prev, entity]));
+    for (const group of current) {
+      requireCoalescedBlock(group, 'coalesced group');
+      const prev = next[next.length - 1] || null;
+      if (prev && isBareRtsGroup(group, instructionById) && maybeContiguous(prev, group)) {
+        next.pop();
+        next.push(makeGroup([prev, group]));
         changed = true;
         continue;
       }
-      next.push(entity);
+      next.push(group);
     }
 
     if (!changed) return next;
@@ -278,83 +261,116 @@ function applyBareRtsFixedPoint(groups) {
   }
 }
 
-// Build a *derived* "coalesced" block view for display purposes. 🤖
-//
-// The display coalescer now intentionally uses a very small rule set:
-// 1. Merge through ROM-contiguous code until a hard-stop instruction (BRK/JMP/RTS/RTI). 🤖
-// 2. Allow a nearby forward branch to merge across an intervening hard-stop region. 🤖
-// 3. Repeatedly swallow bare RTS blocks into the previous display block. 🤖
-export function buildCoalescedAnalysisView(rawAnalysis, config = DEFAULT_COALESCE_CONFIG) {
-  if (!rawAnalysis) return { analysis: rawAnalysis, rawToDisplayBlockIds: {} };
-
-  const rawBlocks = Array.isArray(rawAnalysis.blocks) ? rawAnalysis.blocks : [];
-  const sorted = [...rawBlocks].sort((a, b) => (a.romStart ?? 0) - (b.romStart ?? 0));
-
-  const primaryGroups = buildPrimaryGroups(sorted);
-  const branchMergedGroups = applyBranchOverHardStop(primaryGroups, config);
-  const coalescedBlocks = applyBareRtsFixedPoint(branchMergedGroups);
-
-  const rawToDisplayBlockIds = {};
-  for (const block of coalescedBlocks) {
-    for (const rawId of block.rawBlockIds || []) {
-      rawToDisplayBlockIds[rawId] = block.id;
-    }
-  }
-
-  const coalescedTimeline = coalesceTimeline(rawAnalysis.timeline, rawToDisplayBlockIds);
-
-  const stats = { ...(rawAnalysis.stats || {}) };
-  if (typeof stats.blockCount === 'number') {
-    stats.resolvedRawBlockCount = stats.blockCount;
-    if (typeof stats.rawBlockCount !== 'number') stats.rawBlockCount = stats.blockCount;
-  }
-  stats.blockCount = coalescedBlocks.length;
-
-  const analysis = {
-    ...rawAnalysis,
-    blocks: coalescedBlocks,
-    timeline: coalescedTimeline,
-    stats,
-    debug: {
-      ...(rawAnalysis.debug || {}),
-      coalesced: {
-        config,
-        rawBlockCount: rawBlocks.length,
-        coalescedBlockCount: coalescedBlocks.length
-      }
-    }
-  };
-
-  return { analysis, rawToDisplayBlockIds };
+function sizeClass(byteLen) {
+  if (byteLen <= 10) return 'small';
+  if (byteLen <= 50) return 'medium';
+  return 'large';
 }
 
-function coalesceTimeline(timeline, rawToDisplayBlockIds) {
-  const inItems = Array.isArray(timeline) ? timeline : [];
-  const out = [];
+function codeRangeForBlock(block) {
+  requireCoalescedBlock(block, 'timeline coalesced block');
+  return { start: block.romStart >>> 0, end: block.romEnd >>> 0 };
+}
 
-  for (const it of inItems) {
-    if (!it || it.type !== 'code') {
-      out.push(it);
+function codeTimelineItem(block) {
+  requireCoalescedBlock(block, 'timeline coalesced block');
+  return {
+    type: 'code',
+    blockId: block.coalescedBlockId,
+    coalescedBlockId: block.coalescedBlockId,
+    romStart: block.romStart,
+    romEnd: block.romEnd,
+    byteLen: (block.romEnd - block.romStart) | 0
+  };
+}
+
+function dataTimelineItem(range) {
+  const byteLen = (range.end - range.start) | 0;
+  return {
+    type: 'data',
+    id: `data:${range.start.toString(16)}-${range.end.toString(16)}`,
+    romStart: range.start,
+    romEnd: range.end,
+    byteLen,
+    sizeClass: sizeClass(byteLen)
+  };
+}
+
+function unknownTimelineItem(start, end) {
+  const byteLen = (end - start) | 0;
+  return { type: 'unknown', romStart: start, romEnd: end, byteLen, sizeClass: sizeClass(byteLen) };
+}
+
+function buildTimeline(prgSize, coalescedBlocks, memoryDiscoveries = null) {
+  requireNumber(prgSize, 'analysis.mapper.prgSize');
+  const sortedBlocks = [...requireArray(coalescedBlocks, 'coalescedBlocks')]
+    .map((block, index) => requireCoalescedBlock(block, `timeline coalescedBlocks[${index}]`))
+    .sort((a, b) => a.romStart - b.romStart || a.romEnd - b.romEnd);
+  const codeRanges = sortedBlocks.map((block) => codeRangeForBlock(block));
+  const dataRanges = subtractRanges(extractRomReadDataRanges(memoryDiscoveries, prgSize), codeRanges);
+  const occupied = [
+    ...sortedBlocks.map((block) => codeTimelineItem(block)),
+    ...dataRanges.map((range) => dataTimelineItem(range))
+  ].sort((a, b) => a.romStart - b.romStart || a.romEnd - b.romEnd || (a.type === 'code' ? -1 : 1));
+
+  const out = [];
+  let offset = 0;
+
+  for (const item of occupied) {
+    if (item.romEnd <= offset) continue;
+    if (item.romStart > offset) out.push(unknownTimelineItem(offset, item.romStart));
+    if (item.romStart < offset) {
+      const romEnd = item.romEnd;
+      const romStart = offset;
+      const byteLen = romEnd - romStart;
+      out.push({ ...item, romStart, romEnd, byteLen, sizeClass: item.type === 'code' ? item.sizeClass : sizeClass(byteLen) });
+      offset = Math.max(offset, romEnd);
       continue;
     }
+    out.push(item);
+    offset = Math.max(offset, item.romEnd);
+  }
 
-    const mappedId = rawToDisplayBlockIds?.[it.blockId] ?? null;
-    if (!mappedId) throw new Error(`Missing display block mapping for raw timeline block ${it.blockId}`);
-    const prev = out[out.length - 1];
+  if (prgSize > offset) out.push(unknownTimelineItem(offset, prgSize));
+  return out;
+}
 
-    if (
-      prev &&
-      prev.type === 'code' &&
-      prev.blockId === mappedId &&
-      typeof prev.romEnd === 'number' &&
-      typeof it.romStart === 'number' &&
-      prev.romEnd === it.romStart
-    ) {
-      prev.romEnd = it.romEnd;
-      prev.byteLen = (prev.romEnd - prev.romStart) | 0;
-    } else {
-      out.push({ ...it, blockId: mappedId });
+export function buildCoalescedBlocks(analysis) {
+  requireObject(analysis, 'analysis');
+  const blocks = requireArray(analysis.blocks, 'analysis.blocks');
+  const mapper = requireObject(analysis.mapper, 'analysis.mapper');
+  requireNumber(mapper.prgSize, 'analysis.mapper.prgSize');
+
+  const instructionById = buildInstructionMap(analysis.instructions, 'analysis.instructions');
+  const edges = requireArray(analysis.edges, 'analysis.edges');
+  for (let i = 0; i < edges.length; i += 1) requireEdge(edges[i], `analysis.edges[${i}]`);
+  const sorted = [...blocks].map((block, index) => requireRawBlock(block, `analysis.blocks[${index}]`)).sort((a, b) => a.romStart - b.romStart);
+  const primary = buildPrimaryGroups(instructionById, sorted);
+  const branchMerged = applyBranchOverHardStop(analysis, instructionById, primary);
+  const coalescedBlocks = applyBareRtsAbsorption(instructionById, branchMerged);
+
+  const blockIdToCoalescedBlockId = {};
+  for (const coalescedBlock of coalescedBlocks) {
+    requireCoalescedBlock(coalescedBlock, 'coalesced block');
+    for (const blockId of coalescedBlock.sourceBlockIds) {
+      blockIdToCoalescedBlockId[blockId] = coalescedBlock.coalescedBlockId;
     }
   }
-  return out;
+
+  return {
+    coalescedBlocks,
+    timeline: buildTimeline(mapper.prgSize, coalescedBlocks, analysis.memoryDiscoveries),
+    blockIdToCoalescedBlockId
+  };
+}
+
+export function buildCoalescedAnalysisView(analysis) {
+  const coalesced = buildCoalescedBlocks(analysis);
+  return {
+    blocks: coalesced.coalescedBlocks,
+    coalescedBlocks: coalesced.coalescedBlocks,
+    timeline: coalesced.timeline,
+    blockIdToDisplayBlockId: coalesced.blockIdToCoalescedBlockId,
+    blockIdToCoalescedBlockId: coalesced.blockIdToCoalescedBlockId
+  };
 }

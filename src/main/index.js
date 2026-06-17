@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { registerAnalysisIpc, getActiveAnalysisState } from './analyze2/analysisIpc.js';
+import { registerAnalysisIpc, getActiveAnalysisState } from './analyze/analysisIpc.js';
 import { registerCodeViewIpc } from './codeView/codeViewIpc.js';
 import { registerRomFeaturesIpc } from './romFeaturesIpc.js';
 import { registerTraceStreamerIpc } from './traceStreamer/traceStreamerIpc.js';
@@ -14,16 +14,11 @@ import { registerLabelsIpc, setMainWindow as setMainWindowForLabels } from './la
 import { setMainWindow as setMainWindowForTraceStreamer } from './traceStreamer/traceStreamerWindow.js';
 import { registerAnalysisLogIpc, setMainWindow as setMainWindowForAnalysisLog } from './analysisLogWindow.js';
 import { registerTuningIpc } from './tuningState.js';
-import { registerMarkovIpc } from './markov/markovIpc.js';
 import { registerGraphIpc } from './graph/graphIpc.js';
-import { registerHeatmapIpc } from './heatmap/heatmapIpc.js';
 import { registerMemoryMapIpc } from './memoryMap/memoryMapIpc.js';
 import { registerRomFolderIpc } from './romFolder/romFolderIpc.js';
 import { setMainWindow as setMainWindowForTuning } from './tuningWindow.js';
-import { setMainWindow as setMainWindowForMarkov } from './markov/markovWindow.js';
-import { setMainWindow as setMainWindowForMarkovMap } from './markov/markovMapWindow.js';
 import { registerMemoryMapWindowIpc, setMainWindow as setMainWindowForMemoryMap } from './memoryMapWindow.js';
-import { setMainWindow as setMainWindowForHeatmap } from './heatmapWindow.js';
 import { setMainWindow as setMainWindowForGraph } from './graphWindow.js';
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowState } from './windowState.js';
 
@@ -80,9 +75,11 @@ app.whenReady().then(async () => {
   registerMemoryMapWindowIpc();
   registerAnalysisLogIpc();
   registerTuningIpc();
-  registerMarkovIpc({ getActiveState: getActiveAnalysisState });
+  // Markov is parked for now; leave its handlers unregistered until the feature is reworked.
+  // registerMarkovIpc({ getActiveState: getActiveAnalysisState });
   registerGraphIpc({ getActiveState: getActiveAnalysisState });
-  registerHeatmapIpc({ getActiveState: getActiveAnalysisState });
+  // Heatmap is parked for now; leave its handlers unregistered until the feature is reworked.
+  // registerHeatmapIpc({ getActiveState: getActiveAnalysisState });
   registerMemoryMapIpc({ getActiveState: getActiveAnalysisState });
   registerRomFolderIpc();
   registerMenuSettingsIpc();
@@ -93,10 +90,10 @@ app.whenReady().then(async () => {
   setMainWindowForTraceStreamer(win);
   setMainWindowForAnalysisLog(win);
   setMainWindowForTuning(win);
-  setMainWindowForMarkov(win);
-  setMainWindowForMarkovMap(win);
+  // setMainWindowForMarkov(win);
+  // setMainWindowForMarkovMap(win);
   setMainWindowForMemoryMap(win);
-  setMainWindowForHeatmap(win);
+  // setMainWindowForHeatmap(win);
   setMainWindowForGraph(win);
   installAppMenu({ win, recentRoms });
 });

@@ -1,6 +1,6 @@
 import { loadMarkovModel, loadCombinedCodeProfile } from './markovStore.js';
-import { scoreBlockWithMarkovModel, scoreBlockWithCombinedCodeProfile } from '../../shared/analyze/markov/opcodeScoring.js';
-import { scoreFeatureVectorWithCodeProfile } from '../../shared/analyze/markov/opcodeProfile.js';
+import { scoreBlockWithMarkovModel, scoreBlockWithCombinedCodeProfile } from '../../shared/markov/opcodeScoring.js';
+import { scoreFeatureVectorWithCodeProfile } from '../../shared/markov/opcodeProfile.js';
 import { percentile } from '../../shared/utils/statsUtils.js';
 import { getPrgRegionSizeBytes } from '../utils/prgRegionUtils.js';
 

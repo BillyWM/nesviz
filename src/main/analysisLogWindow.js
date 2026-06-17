@@ -6,13 +6,13 @@ import {
   analysisLogGroupKey,
   analysisLogPhaseKey,
   buildAnalysisLogOutline
-} from '../shared/analyze2/analysisLogOutline.js';
+} from '../shared/analyze/analysisLogOutline.js';
 import {
   ANALYSIS_PHASE_GROUPS,
   ANALYSIS_PROGRESS_DETAIL_KINDS,
   ANALYSIS_PROGRESS_MESSAGE_KINDS
-} from '../shared/analyze2/analysisConstants.js';
-import { createDefaultAnalysisPlan } from './analyze2/analysisPlan.js';
+} from '../shared/analyze/analysisConstants.js';
+import { createDefaultAnalysisPlan } from './analyze/analysisPlan.js';
 import { applyMaximizedIfNeeded, attachSaveOnClose, getInitialWindowStateSync } from './windowState.js';
 import { loadRendererWindow } from './utils/windowLoaderUtils.js';
 

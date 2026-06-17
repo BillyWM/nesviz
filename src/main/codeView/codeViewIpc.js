@@ -1,8 +1,8 @@
 import { ipcMain } from 'electron';
 
-import { requireArray, requireObject, requireString } from '../../shared/analyze2/dataShape.js';
-import { buildAbstractInterpretationBlockDebug } from '../../shared/analyze2/debug/abstractInterpretationBlockDebug.js';
-import { createMapperModel } from '../../shared/analyze2/mapper/createMapperModel.js';
+import { requireArray, requireObject, requireString } from '../../shared/analyze/dataShape.js';
+import { buildAbstractInterpretationBlockDebug } from '../../shared/analyze/debug/abstractInterpretationBlockDebug.js';
+import { createMapperModel } from '../../shared/analyze/mapper/createMapperModel.js';
 import {
   buildBlocksIndex,
   getDisplayBlock,

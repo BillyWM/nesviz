@@ -7,10 +7,7 @@ import { showTraceStreamerWindow } from './traceStreamer/traceStreamerWindow.js'
 import { showAnalysisLogWindow } from './analysisLogWindow.js';
 import { showTuningWindow } from './tuningWindow.js';
 import { showMemoryMapWindow } from './memoryMapWindow.js';
-import { showHeatmapWindow } from './heatmapWindow.js';
 import { showGraphWindow } from './graphWindow.js';
-import { showMarkovWindow } from './markov/markovWindow.js';
-import { showMarkovMapWindow } from './markov/markovMapWindow.js';
 import { getUserSettings, getUserSettingsSync, setShowNamedConstantsSetting } from './userDataStore.js';
 
 let currentWin = null;
@@ -115,12 +112,6 @@ function buildTemplate({ win, recentRoms }) {
           click: () => {
             showGraphWindow();
           }
-        },
-        {
-          label: 'Heatmap',
-          click: () => {
-            showHeatmapWindow();
-          }
         }
       ]
     },
@@ -177,18 +168,6 @@ function buildTemplate({ win, recentRoms }) {
       label: 'Tuning',
       click: () => {
         showTuningWindow();
-      }
-    },
-    {
-      label: 'Markov',
-      click: () => {
-        showMarkovWindow();
-      }
-    },
-    {
-      label: 'Markov map',
-      click: () => {
-        showMarkovMapWindow();
       }
     }
   ];

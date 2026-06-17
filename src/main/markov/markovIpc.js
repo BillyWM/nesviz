@@ -6,8 +6,8 @@ import {
   trainOpcodeMarkovModelFromBlocks,
   trainMnemonicMarkovModelFromBlocks,
   trainAddressingMarkovModelFromBlocks
-} from '../../shared/analyze/markov/opcodeTrainer.js';
-import { trainCombinedCodeProfileFromBlocks } from '../../shared/analyze/markov/opcodeProfile.js';
+} from '../../shared/markov/opcodeTrainer.js';
+import { trainCombinedCodeProfileFromBlocks } from '../../shared/markov/opcodeProfile.js';
 
 function normalizeSource(source) {
   return source === 'probablePlus' ? 'probablePlus' : 'confirmed';

@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 
-import { buildGraphData } from '../../shared/analyze/visual/buildGraphData.js';
+import { buildGraphData } from './buildGraphData.js';
 import { loadGraphLayoutCache, saveGraphLayoutCache } from '../graphLayoutCache.js';
 
 export function registerGraphIpc({ getActiveState } = {}) {

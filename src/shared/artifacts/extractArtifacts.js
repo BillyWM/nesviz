@@ -1,4 +1,4 @@
-import { requireArray, requireObject } from '../analyze2/dataShape.js';
+import { requireArray, requireObject } from '../analyze/dataShape.js';
 
 // Transitional compatibility extractor for the old ArtifactPanel contract.
 // Real artifacts (POIs, jump tables, memory-map spans, semantic facts, etc.)

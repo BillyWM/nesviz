@@ -67,8 +67,6 @@ contextBridge.exposeInMainWorld('nesviz', {
   getAnalysisLogOutline: () => ipcRenderer.invoke('nesviz:getAnalysisLogOutline'),
   copyText: (text) => ipcRenderer.invoke('nesviz:copyText', { text }),
   getMemoryMapData: () => ipcRenderer.invoke('nesviz:getMemoryMapData'),
-  getHeatmapData: () => ipcRenderer.invoke('nesviz:getHeatmapData'),
-  getMarkovMapData: (options) => ipcRenderer.invoke('nesviz:getMarkovMapData', options),
   getGraphData: () => ipcRenderer.invoke('nesviz:getGraphData'),
   getGraphLayoutCache: () => ipcRenderer.invoke('nesviz:getGraphLayoutCache'),
   saveGraphLayoutCache: (payload) => ipcRenderer.invoke('nesviz:saveGraphLayoutCache', payload),
@@ -79,7 +77,6 @@ contextBridge.exposeInMainWorld('nesviz', {
   getTuningState: () => ipcRenderer.invoke('nesviz:getTuningState'),
   setTuningState: (patch) => ipcRenderer.invoke('nesviz:setTuningState', { patch }),
   resetTuningState: () => ipcRenderer.invoke('nesviz:resetTuningState'),
-  markovTrainOpcodeModel: (options) => ipcRenderer.invoke('nesviz:markovTrainOpcodeModel', options),
 
   onTuningUpdated: (callback) => {
     const listener = (_evt, payload) => callback(payload);
@@ -176,18 +173,6 @@ contextBridge.exposeInMainWorld('nesviz', {
     const listener = () => callback();
     ipcRenderer.on('nesviz:memoryMapDataChanged', listener);
     return () => ipcRenderer.removeListener('nesviz:memoryMapDataChanged', listener);
-  },
-
-  onHeatmapDataChanged: (callback) => {
-    const listener = () => callback();
-    ipcRenderer.on('nesviz:heatmapDataChanged', listener);
-    return () => ipcRenderer.removeListener('nesviz:heatmapDataChanged', listener);
-  },
-
-  onMarkovMapDataChanged: (callback) => {
-    const listener = () => callback();
-    ipcRenderer.on('nesviz:markovMapDataChanged', listener);
-    return () => ipcRenderer.removeListener('nesviz:markovMapDataChanged', listener);
   },
 
   onGraphDataChanged: (callback) => {
